@@ -1,0 +1,14 @@
+.env
+node_modules/
+*.log
+.DS_Store
+
+status.json
+skip-orders.json
+
+debug-orders/
+reports/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    @page {
+      size: A4;
+      margin: 16mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #1f2937;
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 3px solid #111827;
+      padding-bottom: 16px;
+      margin-bottom: 26px;
+    }
+
+    .brand {
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+      color: #111827;
+    }
+
+    .tagline {
+      margin-top: 4px;
+      font-size: 11px;
+      color: #6b7280;
+      letter-spacing: 0.2px;
+    }
+
+    .document-box {
+      text-align: right;
+    }
+
+    .document-box h1 {
+      margin: 0;
+      font-size: 25px;
+      font-weight: 800;
+      color: #111827;
+    }
+
+    .document-box div {
+      margin-top: 5px;
+      font-size: 11px;
+      color: #4b5563;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 34px;
+      margin-bottom: 30px;
+    }
+
+    .box {
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 14px 16px;
+      background: #ffffff;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: #111827;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    .address {
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .details-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 1px solid #eef0f3;
+      padding: 6px 0;
+    }
+
+    .details-row:last-child {
+      border-bottom: none;
+    }
+
+    .details-row span:first-child {
+      color: #6b7280;
+    }
+
+    .details-row strong {
+      text-align: right;
+      color: #111827;
+    }
+
+    .items-title {
+      margin-top: 6px;
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #111827;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      page-break-inside: auto;
+    }
+
+    thead {
+      display: table-header-group;
+    }
+
+    tr {
+      page-break-inside: avoid;
+      page-break-after: auto;
+    }
+
+    thead th {
+      background: #111827;
+      color: #ffffff;
+      text-align: left;
+      font-size: 11px;
+      padding: 10px 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    tbody td {
+      padding: 12px 9px;
+      border-bottom: 1px solid #e5e7eb;
+      vertical-align: top;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #fafafa;
+    }
+
+    .qty {
+      width: 70px;
+      text-align: center;
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .qty-normal {
+  font-weight: 800;
+}
+
+.qty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #111827;
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 15px;
+  line-height: 1;
+}
+
+tr.multi-qty {
+  background: #fff7ed;
+}
+
+    .sku {
+      width: 145px;
+      color: #374151;
+      font-size: 11px;
+    }
+
+    .product-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+    .product-meta {
+      margin-top: 4px;
+      color: #6b7280;
+      font-size: 11px;
+    }
+
+    .pack-note {
+      margin-top: 26px;
+      padding: 13px 15px;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      font-size: 11px;
+      color: #374151;
+    }
+
+    .signature-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-top: 32px;
+    }
+
+    .signature-box {
+      border-top: 1px solid #9ca3af;
+      padding-top: 7px;
+      color: #6b7280;
+      font-size: 10px;
+    }
+
+    .footer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      border-top: 1px solid #d1d5db;
+      padding-top: 8px;
+      font-size: 9.5px;
+      color: #6b7280;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .muted {
+      color: #6b7280;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div>
+      <div class="brand">
+  <img src="{{LOGO_URL}}" style="height:42px;">
+</div>
+      <div class="tagline">Gesundheit · Vitalität · Qualität</div>
+    </div>
+
+    <div class="document-box">
+      <h1>Lieferschein</h1>
+      <div>Bestellung {{ORDER_NAME}}</div>
+      <div>{{ORDER_DATE}}</div>
+    </div>
+  </div>
+
+  <div class="info-grid">
+    <div class="box">
+      <div class="section-title">Lieferadresse</div>
+      <div class="address">
+        {{SHIPPING_ADDRESS}}
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="section-title">Bestelldetails</div>
+<div style="margin-top:12px; text-align:right;">
+  <img src="{{QR_CODE}}" style="height:90px;">
+</div>
+
+      <div class="details-row">
+        <span>Bestellung</span>
+        <strong>{{ORDER_NAME}}</strong>
+      </div>
+
+      <div class="details-row">
+        <span>Datum</span>
+        <strong>{{ORDER_DATE}}</strong>
+      </div>
+
+      <div class="details-row">
+        <span>E-Mail</span>
+        <strong>{{CUSTOMER_EMAIL}}</strong>
+      </div>
+
+      <div class="details-row">
+        <span>Versand</span>
+        <strong>{{SHIPPING_PROVIDER}}</strong>
+      </div>
+    </div>
+  </div>
+
+  <div class="items-title">Artikelübersicht</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="qty">Menge</th>
+        <th>Artikel</th>
+        <th class="sku">SKU</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ITEM_ROWS}}
+    </tbody>
+  </table>
+
+  <div class="pack-note">
+    Bitte prüfen Sie die Lieferung anhand dieses Lieferscheins. Vielen Dank für Ihre Bestellung.
+  </div>
+
+ 
+ <div class="footer">
+  {{COMPANY_FOOTER}}<br>
+  Rücksendungen bitte gemäß unseren Rückgabebedingungen abwickeln.<br>
+  Automatisch erstellt durch DocMorris AutoPrint
+</div>
+
+</body>
+</html>

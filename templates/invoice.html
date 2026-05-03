@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    @page { size: A4; margin: 18mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #1f2937; font-size: 12px; margin: 0; line-height: 1.45; }
+    .header { display: flex; justify-content: space-between; border-bottom: 3px solid #111827; padding-bottom: 18px; margin-bottom: 28px; }
+    .brand { font-size: 28px; font-weight: 800; }
+    .brand img { max-height: 46px; max-width: 230px; object-fit: contain; }
+    .title { text-align: right; }
+    .title h1 { margin: 0; font-size: 25px; }
+    .title div { margin-top: 5px; color: #4b5563; font-size: 11px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-bottom: 30px; }
+    .box { border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; }
+    .section-title { font-size: 11px; font-weight: 800; text-transform: uppercase; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; margin-bottom: 10px; letter-spacing: 0.5px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th { background: #111827; color: white; text-align: left; padding: 10px 8px; font-size: 11px; text-transform: uppercase; }
+    td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; vertical-align: top; }
+    .right { text-align: right; }
+    .muted { color: #6b7280; font-size: 11px; }
+.invoice-qty,
+.qty {
+  text-align: center;
+  font-weight: 800;
+}
+
+.qty-normal {
+  font-weight: 800;
+}
+
+.qty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #111827;
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 15px;
+  line-height: 1;
+}
+
+tr.multi-qty {
+  background: #fff7ed;
+}
+    .sum { margin-top: 24px; width: 280px; margin-left: auto; }
+    .sum-row { display: flex; justify-content: space-between; border-bottom: 1px solid #e5e7eb; padding: 7px 0; }
+    .sum-row.total { font-weight: 800; font-size: 14px; border-bottom: 2px solid #111827; }
+    .note { margin-top: 30px; padding: 13px 15px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 11px; color: #374151; }
+    .footer { position: fixed; bottom: 0; left: 0; right: 0; border-top: 1px solid #d1d5db; padding-top: 8px; font-size: 9.5px; color: #6b7280; text-align: center; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="brand">{{BRAND_BLOCK}}</div>
+      <div class="muted">Gesundheit · Vitalität · Qualität</div>
+    </div>
+    <div class="title">
+      <h1>Rechnung / Beleg</h1>
+      <div>Bestellung {{ORDER_NAME}}</div>
+      <div>{{ORDER_DATE}}</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="box">
+  <div class="section-title">Rechnungsempfänger</div>
+  {{BILLING_ADDRESS}}
+</div>
+
+<div class="box">
+  <div class="section-title">Lieferadresse</div>
+  {{SHIPPING_ADDRESS}}
+</div>
+
+    <div class="box">
+      <div class="section-title">Bestelldaten</div>
+      <p><strong>Bestellung:</strong> {{ORDER_NAME}}</p>
+      <p><strong>Datum:</strong> {{ORDER_DATE}}</p>
+      
+      <p><strong>Zahlstatus:</strong> bezahlt</p>
+    </div>
+  </div>
+
+  <div class="section-title">Positionen</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:70px;">Menge</th>
+        <th>Artikel</th>
+        <th class="right" style="width:100px;">Einzelpreis</th>
+        <th class="right" style="width:100px;">Gesamt</th>
+      </tr>
+    </thead>
+    <tbody>{{INVOICE_ROWS}}</tbody>
+  </table>
+
+<div class="sum">
+  {{VAT_SUMMARY_ROWS}}
+
+  <div class="sum-row total">
+    <span>Gesamt brutto</span>
+    <strong>{{TOTAL}}</strong>
+  </div>
+</div>
+
+  <div class="note">
+    Dieser Beleg wurde automatisch aus den Shopify-Bestelldaten für die interne Dokumentation erstellt.
+  </div>
+
+  <div class="footer">
+    {{COMPANY_FOOTER}}<br>
+    USt-IdNr.: {{VAT_ID}}<br>
+    Automatisch erstellt durch DocMorris AutoPrint
+  </div>
+</body>
+</html>
