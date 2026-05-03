@@ -26,6 +26,8 @@ const DASHBOARD_PROCESS = process.env.DASHBOARD_PROCESS || 'dashboard';
 const APP_VERSION = process.env.APP_VERSION || '1.0.0';
 const APP_BUILD = process.env.APP_BUILD || 'dev';
 
+const RETURN_ARCHIVE_DIR = process.env.RETURN_ARCHIVE_DIR || path.join(PRINT_ARCHIVE_DIR, 'retouren');
+
 app.use(express.urlencoded({ extended: true }));
 
 function esc(value) {
@@ -101,6 +103,29 @@ function readLogs() {
     .slice(-100);
 }
 
+function getHealthStats() {
+  const logs = readLogs();
+  const status = readStatus();
+
+  const successToday = logs.filter(line => line.includes('✅ Fertig:')).length;
+  const errorsToday = logs.filter(line =>
+    line.includes('❌ Fehler') ||
+    line.includes('[ERROR]') ||
+    line.toLowerCase().includes('fehler')
+  ).length;
+
+  const skipped = readSkips().length;
+
+  const lastErrorActive = Boolean(status.lastError);
+
+  return {
+    successToday,
+    errorsToday,
+    skipped,
+    lastErrorActive
+  };
+}
+
 function readPdfList(dir) {
   if (!fs.existsSync(dir)) return [];
 
@@ -166,9 +191,18 @@ app.post('/control/restart', async (req, res) => {
   res.send(renderPage(result));
 });
 
-app.post('/control/restart-dashboard', async (req, res) => {
-  const result = await runCommand(`pm2 restart ${DASHBOARD_PROCESS} --update-env`);
-  res.send(renderPage(result));
+app.post('/control/restart-dashboard', (req, res) => {
+  res.send(renderPage({
+    command: `pm2 restart ${DASHBOARD_PROCESS} --update-env`,
+    ok: true,
+    stdout: 'Dashboard wird neu gestartet...',
+    stderr: '',
+    error: ''
+  }));
+
+  setTimeout(() => {
+    exec(`pm2 restart ${DASHBOARD_PROCESS} --update-env`, { cwd: APP_DIR });
+  }, 500);
 });
 
 app.post('/control/restart-all', async (req, res) => {
@@ -180,6 +214,79 @@ app.post('/control/pm2-list', async (req, res) => {
   const result = await runCommand('pm2 list');
   res.send(renderPage(result));
 });
+
+app.post('/control/git-status', async (req, res) => {
+  const result = await runCommand('git status');
+  res.send(renderPage(result));
+});
+
+app.post('/control/git-log', async (req, res) => {
+  const result = await runCommand('git log --oneline -5');
+  res.send(renderPage(result));
+});
+
+app.post('/control/git-backup', async (req, res) => {
+  const result = await runCommand('git add . && git commit -m "Dashboard backup" && git push');
+  res.send(renderPage(result));
+});
+
+
+app.post('/control/retry-order', async (req, res) => {
+  const order = String(req.body.order || '').trim();
+
+  if (!order) {
+    return res.send(renderPage({
+      command: 'retry order',
+      ok: false,
+      stdout: '',
+      stderr: '',
+      error: 'Keine Bestellnummer übergeben.'
+    }));
+  }
+
+  const skips = readSkips().filter(x => x !== order);
+  writeJson(SKIP_FILE, skips);
+
+  const result = await runCommand(`pm2 restart ${AUTOPRINT_PROCESS} --update-env`);
+
+  res.send(renderPage({
+    command: `retry ${order}`,
+    ok: result.ok,
+    stdout: `Bestellung ${order} wurde freigegeben.\n\n${result.stdout}`,
+    stderr: result.stderr,
+    error: result.error
+  }));
+});
+
+
+
+app.post('/control/git-rollback', async (req, res) => {
+  const commit = String(req.body.commit || '').trim();
+
+  if (!commit) {
+    return res.send(renderPage({
+      command: 'git rollback',
+      ok: false,
+      stdout: '',
+      stderr: '',
+      error: 'Kein Commit angegeben.'
+    }));
+  }
+
+  if (!/^[a-f0-9]{7,40}$/i.test(commit)) {
+    return res.send(renderPage({
+      command: 'git rollback',
+      ok: false,
+      stdout: '',
+      stderr: '',
+      error: 'Ungültiger Commit-Hash.'
+    }));
+  }
+
+  const result = await runCommand(`git reset --hard ${commit} && pm2 restart all --update-env`);
+  res.send(renderPage(result));
+});
+
 
 app.post('/control/reprint-invoice', async (req, res) => {
   const order = String(req.body.order || '').trim();
@@ -197,6 +304,34 @@ app.post('/control/reprint-invoice', async (req, res) => {
   const result = await runCommand(`node reprint-invoice.js ${order}`);
   res.send(renderPage(result));
 });
+
+
+
+app.post('/control/create-return-label', async (req, res) => {
+  const order = String(req.body.order || '').trim();
+
+  if (!order) {
+    return res.send(renderPage({
+      command: 'create return label',
+      ok: false,
+      stdout: '',
+      stderr: '',
+      error: 'Keine Bestellnummer übergeben.'
+    }));
+  }
+
+  const result = await runCommand(`node create-return-label.js ${order}`);
+
+  res.send(renderPage({
+    command: `create return label ${order}`,
+    ok: result.ok,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error
+  }));
+});
+
+  
 
 app.post('/control/reprint-packing-slip', async (req, res) => {
   const order = String(req.body.order || '').trim();
@@ -243,6 +378,7 @@ app.post('/control/remove-skip', (req, res) => {
 app.use('/invoices', express.static(INVOICE_DIR));
 app.use('/labels', express.static(LABEL_ARCHIVE_DIR));
 app.use('/slips', express.static(SLIP_ARCHIVE_DIR));
+app.use('/returns', express.static(RETURN_ARCHIVE_DIR));
 
 app.get('/api/status', (req, res) => res.json(readStatus()));
 app.get('/api/errors', (req, res) => res.json({ errors: readErrors() }));
@@ -257,6 +393,8 @@ function renderPage(actionResult = null) {
   const invoices = readPdfList(INVOICE_DIR);
   const labels = readPdfList(LABEL_ARCHIVE_DIR);
   const slips = readPdfList(SLIP_ARCHIVE_DIR);
+  const returns = readPdfList(RETURN_ARCHIVE_DIR);
+  const health = getHealthStats();
 
   const color =
     s.status === 'OK' ? '#16a34a' :
@@ -434,12 +572,28 @@ function renderPage(actionResult = null) {
       <p class="small">Version ${esc(APP_VERSION)} · Build ${esc(APP_BUILD)}</p>
       <div class="status">● ${esc(s.status)}</div>
 
+<div class="card">
+  <h2>System Health</h2>
+
+  <div class="grid">
+    <div>
+      <div class="row"><span class="label">Autopilot:</span>${s.status === 'OK' ? '🟢 Aktiv' : '🔴 Prüfen'}</div>
       <div class="row"><span class="label">Letzter Scan:</span>${esc(s.lastScan || '-')}</div>
       <div class="row"><span class="label">Nächster Scan:</span>${esc(s.nextScan || '-')}</div>
-      <div class="row"><span class="label">Letzte Bestellung:</span>${esc(s.lastOrder || '-')}</div>
       <div class="row"><span class="label">Letzter Druck:</span>${esc(s.lastPrint || '-')}</div>
-      <div class="row"><span class="label">Letzter Fehler:</span>${esc(s.lastError || '-')}</div>
-      <div class="row"><span class="label">Fehlerdatei:</span>${esc(s.lastErrorFile || '-')}</div>
+      <div class="row"><span class="label">Letzte Bestellung:</span>${esc(s.lastOrder || '-')}</div>
+    </div>
+
+    <div>
+      <div class="row"><span class="label">Heute fertig:</span>${health.successToday}</div>
+      <div class="row"><span class="label">Fehler heute:</span>${health.errorsToday}</div>
+      <div class="row"><span class="label">Skip-Liste:</span>${health.skipped}</div>
+      <div class="row"><span class="label">Fehlerstatus:</span>${health.lastErrorActive ? '🔴 Fehler vorhanden' : '🟢 Kein aktiver Fehler'}</div>
+    </div>
+  </div>
+</div>
+
+     
 
       <p class="small">Aktualisiert automatisch alle 15 Sekunden · http://127.0.0.1:${PORT}</p>
     </div>
@@ -502,7 +656,14 @@ function renderPage(actionResult = null) {
                     <tr>
                       <td>${esc(e.time)}</td>
                       <td><span class="badge">${esc(e.order)}</span></td>
-                      <td>${esc(e.message)}</td>
+                      <td>
+  ${esc(e.message)}
+
+  <form method="POST" action="/control/retry-order">
+    <input type="hidden" name="order" value="${esc(e.order)}">
+    <button class="orange" type="submit">Erneut versuchen</button>
+  </form>
+</td>
                     </tr>
                   `).join('')}
                 </tbody>
@@ -580,6 +741,11 @@ function renderPage(actionResult = null) {
                             <input type="hidden" name="order" value="${esc(order)}">
                             <button class="orange" type="submit">Lieferschein drucken</button>
                           </form>
+
+<form method="POST" action="/control/create-return-label">
+  <input type="hidden" name="order" value="${esc(order)}">
+  <button class="red" type="submit">Retourenlabel erstellen</button>
+</form>
                         </td>
                       </tr>
                     `;
@@ -658,11 +824,84 @@ function renderPage(actionResult = null) {
           `
       }
     </div>
+<div class="card">
+  <h2>Retourenlabels (Archiv)</h2>
+  <p class="small">Es werden maximal die letzten 50 Retourenlabels angezeigt.</p>
 
+  ${
+    returns.length === 0
+      ? `<p class="empty">Keine Retourenlabels vorhanden.</p>`
+      : `
+        <div class="pdf-list">
+          <table>
+            <thead>
+              <tr>
+                <th>Datei</th>
+                <th>Geändert</th>
+                <th>Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${returns.map(ret => `
+                <tr>
+                  <td>${esc(ret.file)}</td>
+                  <td>${esc(new Date(ret.created).toLocaleString('de-DE'))}</td>
+                  <td>
+                    <a href="/returns/${encodeURIComponent(ret.file)}" target="_blank">Öffnen</a>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `
+  }
+</div>
     <div class="card">
       <h2>Live-Log heute</h2>
       <pre>${esc(logs.join('\n') || 'Noch keine Logs vorhanden.')}</pre>
     </div>
+<div class="card">
+  <h2>System-Backup / GitHub</h2>
+  <div class="buttons">
+    <form method="POST" action="/control/git-status">
+      <button class="gray" type="submit">Git Status</button>
+    </form>
+
+    <form method="POST" action="/control/git-log">
+      <button class="blue" type="submit">Letzte Versionen</button>
+    </form>
+
+    <form method="POST" action="/control/git-backup">
+      <button class="green" type="submit">Änderungen sichern + pushen</button>
+    </form>
+  </div>
+
+  <p class="small">
+    Wichtig: Nur klicken, wenn das System gerade stabil läuft.
+  </p>
+</div>
+
+
+<div class="card">
+  <h2>Rollback / Wiederherstellung</h2>
+
+  <p class="small">
+    Nur nutzen, wenn eine Änderung das System beschädigt hat. Vorher über „Letzte Versionen“ den gewünschten Commit kopieren.
+  </p>
+
+  <form method="POST" action="/control/git-rollback">
+    <input
+      name="commit"
+      placeholder="Commit-Hash einfügen, z. B. a1b2c3d"
+      style="padding:11px; border:1px solid #d1d5db; border-radius:10px; min-width:320px;"
+      required
+    >
+    <button class="red" type="submit">Rollback ausführen</button>
+  </form>
+</div>
+
+
 
     <div class="card">
       <h2>Hilfe / Notfallablauf</h2>
@@ -689,6 +928,6 @@ app.get('/', (req, res) => {
   res.send(renderPage());
 });
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Dashboard läuft auf http://127.0.0.1:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Dashboard läuft auf http://0.0.0.0:${PORT}`);
 });
