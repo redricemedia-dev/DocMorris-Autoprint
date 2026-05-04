@@ -10,6 +10,10 @@ const PRIVATE_KEY = process.env.SENDCLOUD_PRIVATE_KEY?.trim();
 const DEBUG_ORDER_DIR = process.env.DEBUG_ORDER_DIR || 'C:\\DocMorris-Rechnungen\\debug-orders';
 const RETURN_DIR = process.env.RETURN_ARCHIVE_DIR || 'C:\\DocMorris-Druckarchiv\\retouren';
 
+const RETURN_SHIPPING_OPTION_CODE =
+  process.env.RETURN_SHIPPING_OPTION_CODE || 'dhl_de:retoure/eco_delivery,labelless';
+const RETURN_WEIGHT_KG = Number(process.env.RETURN_WEIGHT_KG || 0.5);
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -19,6 +23,23 @@ function sanitizeFilename(value) {
     .replace(/[<>:"/\\|?*#]/g, '')
     .replace(/\s+/g, '_')
     .trim();
+}
+
+function splitHouseNumber(address1) {
+  const raw = String(address1 || '').trim();
+  const match = raw.match(/^(.+?)\s+(\d+[a-zA-Z]?(?:[-/]\d+[a-zA-Z]?)?)$/);
+
+  if (!match) {
+    return {
+      street: raw,
+      houseNumber: ''
+    };
+  }
+
+  return {
+    street: match[1],
+    houseNumber: match[2]
+  };
 }
 
 function findOrderFile(orderName) {
@@ -38,24 +59,151 @@ function findOrderFile(orderName) {
   return path.join(DEBUG_ORDER_DIR, match);
 }
 
-function getCustomerAddress(order) {
+function getCustomerReturnFromAddress(order) {
   const a = order.shipping_address || order.billing_address;
 
   if (!a) {
     throw new Error('Keine Kundenadresse in der Order gefunden.');
   }
 
+  const split = splitHouseNumber(a.address1);
+
   return {
     name: a.name || `${a.first_name || ''} ${a.last_name || ''}`.trim(),
     company_name: a.company || '',
-    address: a.address1 || '',
-    address_2: a.address2 || '',
-    city: a.city || '',
+    address_line_1: split.street,
+    house_number: split.houseNumber || '0',
+    address_line_2: a.address2 || '',
     postal_code: a.zip || '',
-    country: a.country_code || 'DE',
-    email: order.email || '',
-    telephone: a.phone || order.phone || ''
+    city: a.city || '',
+    country_code: a.country_code || 'DE',
+    phone_number: a.phone || order.phone || '',
+    email: order.email || 'info@redrice.biz'
   };
+}
+
+function getReturnToAddress() {
+  return {
+    name: process.env.RETURN_TO_NAME || 'VitaSanum GmbH',
+    company_name: process.env.RETURN_TO_COMPANY || 'VitaSanum GmbH',
+    address_line_1: process.env.RETURN_TO_ADDRESS || 'Königsallee',
+    house_number: process.env.RETURN_TO_HOUSE_NUMBER || '27',
+    postal_code: process.env.RETURN_TO_POSTAL_CODE || '40212',
+    city: process.env.RETURN_TO_CITY || 'Düsseldorf',
+    country_code: process.env.RETURN_TO_COUNTRY || 'DE',
+    phone_number: process.env.RETURN_TO_PHONE || '',
+    email: process.env.RETURN_TO_EMAIL || 'info@redrice.biz'
+  };
+}
+
+function getOrderValue(order) {
+  const value = Number(order.total_price || order.current_total_price || 0);
+  return value > 0 ? value : 1;
+}
+
+function buildParcelItems(order) {
+  return (order.line_items || []).map(item => ({
+    description: String(item.name || item.title || 'Artikel').slice(0, 80),
+    quantity: Number(item.quantity || 1),
+    weight: {
+      value: RETURN_WEIGHT_KG,
+      unit: 'kg'
+    },
+    value: {
+      value: Number(item.price || 1),
+      currency: order.currency || 'EUR'
+    },
+    sku: item.sku || '',
+    product_id: String(item.product_id || item.id || ''),
+    origin_country: 'DE',
+    return_reason_id: 8
+  }));
+}
+
+function getAuth() {
+  return {
+    username: PUBLIC_KEY,
+    password: PRIVATE_KEY
+  };
+}
+
+async function createReturnSynchronously(order) {
+const shipWith = {
+  type: 'shipping_option_code',
+  shipping_option_code: RETURN_SHIPPING_OPTION_CODE
+};
+
+  const payload = {
+    from_address: getCustomerReturnFromAddress(order),
+    to_address: getReturnToAddress(),
+    ship_with: shipWith,
+    dimensions: {
+      height: 10,
+      width: 20,
+      length: 30,
+      unit: 'cm'
+    },
+    weight: {
+      value: RETURN_WEIGHT_KG,
+      unit: 'kg'
+    },
+    collo_count: 1,
+    parcel_items: buildParcelItems(order),
+    send_tracking_emails: false,
+    order_number: order.name,
+    total_order_value: {
+      value: getOrderValue(order),
+      currency: order.currency || 'EUR'
+    },
+    external_reference: `RET-${order.name}-${Date.now()}`,
+    delivery_option: 'drop_off_point',
+    apply_rules: true
+  };
+
+const debugPayloadPath = path.join(
+  RETURN_DIR,
+  `RETURN_PAYLOAD_${sanitizeFilename(order.name)}.json`
+);
+
+fs.writeFileSync(debugPayloadPath, JSON.stringify(payload, null, 2), 'utf8');
+
+console.log('→ Payload gespeichert:', debugPayloadPath);
+
+  const res = await axios.post(
+    'https://panel.sendcloud.sc/api/v3/returns/announce-synchronously',
+    payload,
+    {
+      auth: getAuth(),
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      timeout: 60000
+    }
+  );
+
+  return {
+    data: res.data,
+    payload
+  };
+}
+
+async function downloadReturnLabel(parcelId) {
+  const res = await axios.get(
+    `https://panel.sendcloud.sc/api/v3/parcels/${parcelId}/documents/label`,
+    {
+      auth: getAuth(),
+      responseType: 'arraybuffer',
+      headers: {
+        Accept: 'application/pdf'
+      },
+      params: {
+        paper_size: 'A6'
+      },
+      timeout: 60000
+    }
+  );
+
+  return Buffer.from(res.data);
 }
 
 async function main() {
@@ -73,44 +221,62 @@ async function main() {
 
   const orderFile = findOrderFile(orderName);
   const order = JSON.parse(fs.readFileSync(orderFile, 'utf8'));
-  const customer = getCustomerAddress(order);
 
   console.log('→ Order geladen:', order.name);
-  console.log('→ Kunde:', customer.name);
-  console.log('→ Land:', customer.country);
+  console.log('→ Retourenlabel wird über Sendcloud erstellt...');
+ console.log('→ Return shipping option:', RETURN_SHIPPING_OPTION_CODE);
+  const result = await createReturnSynchronously(order);
 
-  /*
-    STOPP:
-    Die echte Sendcloud Returns-v3 Payload braucht je nach Konto eine Return-Methode,
-    Absender-/Retourenadresse und ggf. Item-/Reason-Daten.
-    Deshalb testen wir jetzt zuerst, ob Order-Laden + Archiv sauber funktioniert.
-  */
+  console.log('→ Sendcloud Return erstellt:', JSON.stringify(result.data, null, 2));
 
-  const testFile = path.join(
+  const parcelId = result.data.parcel_id;
+
+  if (!parcelId) {
+    throw new Error('Sendcloud hat keine parcel_id zurückgegeben.');
+  }
+
+  const pdf = await downloadReturnLabel(parcelId);
+
+  const filePath = path.join(
     RETURN_DIR,
-    `RETURN_TEST_${sanitizeFilename(order.name || orderName)}.txt`
+    `RETURN_${sanitizeFilename(order.name)}_${parcelId}.pdf`
+  );
+
+  fs.writeFileSync(filePath, pdf);
+
+  const metaPath = path.join(
+    RETURN_DIR,
+    `RETURN_${sanitizeFilename(order.name)}_${parcelId}.json`
   );
 
   fs.writeFileSync(
-    testFile,
-    [
-      `Retouren-Test für ${order.name}`,
-      `Kunde: ${customer.name}`,
-      `Adresse: ${customer.address}`,
-      `PLZ/Ort: ${customer.postal_code} ${customer.city}`,
-      `Land: ${customer.country}`,
-      `E-Mail: ${customer.email}`,
-      `Zeit: ${new Date().toISOString()}`
-    ].join('\n'),
+    metaPath,
+    JSON.stringify(
+      {
+        created_at: new Date().toISOString(),
+        order_name: order.name,
+        parcel_id: parcelId,
+        return_id: result.data.return_id,
+        response: result.data
+      },
+      null,
+      2
+    ),
     'utf8'
   );
 
-  console.log('→ Testdatei gespeichert:', testFile);
-  console.log('✅ Retouren-Vorbereitung funktioniert.');
-  console.log('Nächster Schritt: Sendcloud Return-Methode/Returns API Payload ergänzen.');
+  console.log('✅ Retourenlabel gespeichert:', filePath);
+  console.log('→ Metadaten gespeichert:', metaPath);
 }
 
 main().catch(err => {
-  console.error('❌ Fehler:', err.response?.data || err.message);
+  console.error('❌ Fehler beim Erstellen des Retourenlabels');
+
+  if (err.response?.data) {
+    console.error(JSON.stringify(err.response.data, null, 2));
+  } else {
+    console.error(err.message || String(err));
+  }
+
   process.exit(1);
 });
