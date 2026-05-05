@@ -791,7 +791,7 @@ app.get('/', (req, res) => {
 
 app.get('/api/sendcloud/debug', async (req, res) => {
   try {
-    const parcels = await getSendcloudParcels(20);
+    const parcels = await getSendcloudParcels(200);
 
     res.json({
       ok: true,
