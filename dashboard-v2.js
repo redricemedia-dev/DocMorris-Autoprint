@@ -759,8 +759,14 @@ function renderPage(actionResult) {
                     '"<input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\">"+',
                     '"<button class=\\"red\\" type=\\"submit\\">Retoure</button>"+',
                   '"</form>"+',
+
+
+
                   '"<form method=\\"POST\\" action=\\"/control/fulfill-woo\\">"+',
                     '"<input type=\\"hidden\\" name=\\"orderId\\" value=\\""+html(p.id)+"\\">"+',
+
+
+
                     '"<input type=\\"hidden\\" name=\\"tracking\\" value=\\""+html(p.trackingNumber)+"\\">"+',
                     '"<input type=\\"hidden\\" name=\\"url\\" value=\\""+html(p.trackingUrl)+"\\">"+',
                     '"<button class=\\"green\\" type=\\"submit\\">Fulfill</button>"+',
