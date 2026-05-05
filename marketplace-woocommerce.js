@@ -37,22 +37,18 @@ async function getWooCommerceOrders(limit = 20) {
   return orders.map(function(order) {
     const orderNumber = String(order.number || order.id).toLowerCase();
 
-    const parcel = parcels.find(function(p) {
-      const haystack = [
-        p.order_number,
-        p.external_order_id,
-        p.reference,
-        p.name,
-        p.email,
-        p.to_email,
-        p.order_id,
-        p.parcel_items && JSON.stringify(p.parcel_items)
-      ].map(function(x) {
-        return String(x || '').toLowerCase();
-      }).join(' | ');
+  const parcel = parcels.find(function(p) {
+  const emailMatch =
+    String(p.to_email || '').toLowerCase() ===
+    String(order.billing.email || '').toLowerCase();
 
-      return haystack.indexOf(orderNumber) !== -1;
-    });
+  const nameMatch =
+    String(p.name || '').toLowerCase().includes(
+      String(order.billing.last_name || '').toLowerCase()
+    );
+
+  return emailMatch && nameMatch;
+});
 
     return {
       id: order.id,
