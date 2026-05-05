@@ -417,7 +417,7 @@ function renderPage(actionResult = null) {
     }
 
     .wrap {
-      max-width: 1600px;
+      max-width: 1200px;
       margin: 0 auto;
     }
 
@@ -436,16 +436,10 @@ function renderPage(actionResult = null) {
     }
 
     .grid {
-     display: grid;
-     grid-template-columns: repeat(2, minmax(0, 1fr));
-     gap: 18px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
     }
-
-     .grid-3 {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-}
 
     .row {
       margin: 14px 0;

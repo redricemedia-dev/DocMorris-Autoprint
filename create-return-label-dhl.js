@@ -31,41 +31,41 @@ async function main() {
     const token = await getToken();
 
     const payload = {
-      receiverId: RECEIVER_ID,
-      billingNumber: BILLING,
-      shipments: [
-        {
-          shipper: {
-            name: "Test Kunde",
-            address: {
-              streetName: "Teststraße",
-              streetNumber: "1",
-              postalCode: "10115",
-              city: "Berlin",
-              country: "DE"
-            }
-          },
-          returnAddress: {
-            name: "VitaSanum GmbH",
-            address: {
-              streetName: "Rosenheimer Landstr.",
-              streetNumber: "27",
-              postalCode: "85521",
-              city: "Ottobrunn",
-              country: "DE"
-            }
-          }
-        }
-      ]
-    };
+  receiverId: RECEIVER_ID,
+  billingNumber: BILLING,
+  customerReference: "TEST-RETOURE-001",
+  shipmentReference: "TEST-RETOURE-001",
+
+  shipper: {
+    name: "VitaSanum GmbH",
+    address: {
+      streetName: "Rosenheimer Landstr.",
+      streetNumber: "27",
+      postalCode: "85521",
+      city: "Ottobrunn",
+      country: "DE"
+    }
+  },
+
+  consignee: {
+    name: "Test Kunde",
+    address: {
+      streetName: "Teststrasse",
+      streetNumber: "1",
+      postalCode: "10115",
+      city: "Berlin",
+      country: "DE"
+    }
+  }
+};
 
     const res = await axios.post(
-      'https://api-eu.dhl.com/parcel/de/returns/v1/shipments',
-      payload,
+  'https://api-eu.dhl.com/parcel/de/shipping/returns/v1/orders',
+  payload,
       {
         headers: {
           Authorization: `Bearer ${token}`,
-          'DHL-API-Key': DHL_API_KEY,
+         
           'Content-Type': 'application/json'
         }
       }
