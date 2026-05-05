@@ -4,7 +4,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
-const { getWooCommerceOrders, fulfillWooOrder } = require('./marketplace-woocommerce');
+const { getWooCommerceOrders, fulfillWooOrder, getSendcloudParcels } = require('./marketplace-woocommerce');
 
 const app = express();
 
@@ -788,6 +788,37 @@ function renderPage(actionResult) {
 app.get('/', (req, res) => {
   res.send(renderPage(null));
 });
+
+app.get('/api/sendcloud/debug', async (req, res) => {
+  try {
+    const parcels = await getSendcloudParcels(20);
+
+    res.json({
+      ok: true,
+      parcels: parcels.map(p => ({
+        id: p.id,
+        order_number: p.order_number,
+        external_order_id: p.external_order_id,
+        reference: p.reference,
+        name: p.name,
+        email: p.email,
+        to_email: p.to_email,
+        tracking_number: p.tracking_number,
+        tracking_url: p.tracking_url,
+        carrier: p.carrier,
+        status: p.status,
+        keys: Object.keys(p)
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
+Dann:
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Dashboard V2 laeuft auf http://0.0.0.0:' + PORT);

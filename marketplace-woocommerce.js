@@ -82,5 +82,6 @@ async function fulfillWooOrder(orderId, trackingNumber, trackingUrl) {
 
 module.exports = {
   getWooCommerceOrders,
-  fulfillWooOrder
+  fulfillWooOrder,
+  getSendcloudParcels
 };
