@@ -789,6 +789,43 @@ app.get('/', (req, res) => {
   res.send(renderPage(null));
 });
 
+const axios = require('axios');
+
+app.get('/api/mirakl/debug', async (req, res) => {
+  try {
+    const base = process.env.MIRAKL_BASE_URL;
+    const key = process.env.MIRAKL_API_KEY;
+
+    const r = await axios.get(base + '/api/orders', {
+      headers: {
+        'Authorization': key
+      },
+      params: {
+        max: 10
+      }
+    });
+
+    res.json({
+      ok: true,
+      count: r.data.orders ? r.data.orders.length : 0,
+      sample: (r.data.orders || []).map(o => ({
+        order_id: o.order_id,
+        status: o.status,
+        customer: o.customer?.firstname + ' ' + o.customer?.lastname,
+        email: o.customer?.email,
+        shipping_type: o.shipping_type,
+        created: o.created_date
+      }))
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
 app.get('/api/sendcloud/debug', async (req, res) => {
   try {
     const parcels = await getSendcloudParcels(200);
