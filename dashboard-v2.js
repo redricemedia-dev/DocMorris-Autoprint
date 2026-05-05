@@ -826,6 +826,48 @@ app.get('/api/mirakl/debug', async (req, res) => {
   }
 });
 
+app.get('/api/mirakl/tracking-debug', async (req, res) => {
+  try {
+    const base = process.env.MIRAKL_BASE_URL;
+    const key = process.env.MIRAKL_API_KEY;
+
+    const ordersRes = await axios.get(base + '/api/orders', {
+      headers: { 'Authorization': key },
+      params: { max: 20 }
+    });
+
+    const parcels = await getSendcloudParcels(200);
+
+    const result = (ordersRes.data.orders || []).map(order => {
+      const email = (order.customer?.email || '').toLowerCase();
+      const name = (order.customer?.lastname || '').toLowerCase();
+
+      const parcel = parcels.find(p => {
+        const pEmail = String(p.email || p.to_email || '').toLowerCase();
+        const pName = String(p.name || '').toLowerCase();
+
+        return pEmail === email && pName.includes(name);
+      });
+
+      return {
+        order_id: order.order_id,
+        customer: order.customer?.firstname + ' ' + order.customer?.lastname,
+        email,
+        tracking: parcel ? parcel.tracking_number : null,
+        carrier: parcel?.carrier?.code || null
+      };
+    });
+
+    res.json({ ok: true, result });
+
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
 app.get('/api/sendcloud/debug', async (req, res) => {
   try {
     const parcels = await getSendcloudParcels(200);
