@@ -876,17 +876,22 @@ app.get('/api/sendcloud/debug', async (req, res) => {
       ok: true,
       parcels: parcels.map(p => ({
         id: p.id,
-        order_number: p.order_number,
-        external_order_id: p.external_order_id,
-        reference: p.reference,
-        name: p.name,
-        email: p.email,
-        to_email: p.to_email,
-        tracking_number: p.tracking_number,
-        tracking_url: p.tracking_url,
-        carrier: p.carrier,
-        status: p.status,
-        keys: Object.keys(p)
+order_number: p.order_number,
+external_order_id: p.external_order_id,
+external_reference: p.external_reference,
+external_shipment_id: p.external_shipment_id,
+reference: p.reference,
+name: p.name,
+email: p.email,
+city: p.city,
+postal_code: p.postal_code,
+tracking_number: p.tracking_number,
+tracking_url: p.tracking_url,
+carrier: p.carrier,
+status: p.status,
+data: p.data,
+parcel_items: p.parcel_items,
+keys: Object.keys(p)
       }))
     });
   } catch (err) {
