@@ -44,9 +44,22 @@ async function getWooCommerceOrders(limit = 20) {
   return orders.map(function(order) {
     const orderNumber = String(order.number || order.id);
 
-    const parcel = parcels.find(function(p) {
-      return String(p.order_number || '').indexOf(orderNumber) !== -1;
-    });
+   const parcel = parcels.find(function(p) {
+  const haystack = [
+    p.order_number,
+    p.external_order_id,
+    p.reference,
+    p.name,
+    p.email,
+    p.to_email,
+    p.order_id,
+    p.parcel_items && JSON.stringify(p.parcel_items)
+  ].map(function(x) {
+    return String(x || '').toLowerCase();
+  }).join(' | ');
+
+  return haystack.indexOf(orderNumber.toLowerCase()) !== -1;
+});
 
     return {
       id: order.id,
