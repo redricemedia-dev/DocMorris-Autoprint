@@ -6,6 +6,10 @@ const path = require('path');
 const { exec } = require('child_process');
 const { getWooCommerceOrders, fulfillWooOrder, getSendcloudParcels } = require('./marketplace-woocommerce');
 
+
+const shop = process.env.SHOPIFY_MIRAKL_SHOP;
+
+
 const app = express();
 
 const PORT = 3002;
@@ -179,6 +183,17 @@ function renderPostOnlyError(route) {
     stderr: '',
     error: 'Diese Aktion muss ueber den Button im Dashboard ausgefuehrt werden.'
   });
+}
+
+
+function renderMiraklCard() {
+  return `
+    <div class="card">
+      <h2>Mirakl AutoPrint</h2>
+      <p class="small">Live-Log aus C:\\DocMorris-Logs\\mirakl-autoprint.log</p>
+      <pre id="mirakl-log">Lade Mirakl-Logs...</pre>
+    </div>
+  `;
 }
 
 app.post('/control/start', async (req, res) => {
@@ -608,7 +623,7 @@ function renderPage(actionResult) {
     '<html lang="de">',
     '<head>',
       '<meta charset="UTF-8">',
-      '<meta http-equiv="refresh" content="15">',
+      
       '<title>Fulfillment Dashboard V2</title>',
       '<style>',
         'body{font-family:Arial,sans-serif;background:#f6f7f9;padding:40px;color:#111827;}',
@@ -687,13 +702,9 @@ function renderPage(actionResult) {
           ]),
         '</div>',
 
-        '<div id="mirakl" class="tab">',
-          renderPlaceholderCard('Mirakl / ShopApotheke', 'Vorbereiteter Bereich fuer Mirakl- und ShopApotheke-Prozesse.', [
-            'Versandstatus',
-            'Tracking-Rueckmeldung',
-            'Fehlerkontrolle'
-          ]),
-        '</div>',
+'<div id="mirakl" class="tab">',
+  renderMiraklCard(),
+'</div>',
 
         '<div id="system" class="tab">',
           renderControlCard(),
@@ -714,6 +725,7 @@ function renderPage(actionResult) {
           'button.classList.add("active");',
           'localStorage.setItem("activeDashboardTab",id);',
           'if(id==="woocommerce"){loadWooCommerce();}',
+          'if(id==="mirakl"){loadMiraklLogs();}',
         '}',
         'document.addEventListener("DOMContentLoaded",function(){',
           'showTab(localStorage.getItem("activeDashboardTab")||"overview");',
@@ -779,6 +791,22 @@ function renderPage(actionResult) {
             'if(loading){loading.innerText="Fehler beim Laden: "+err.message;}',
           '}',
         '}',
+
+'async function loadMiraklLogs(){',
+  'try{',
+    'var res=await fetch("/api/mirakl/logs");',
+    'var data=await res.json();',
+    'var el=document.getElementById("mirakl-log");',
+    'if(!el){return;}',
+    'if(!data.ok){el.innerText="Fehler beim Laden der Mirakl-Logs";return;}',
+    'el.innerText=(data.logs&&data.logs.length)?data.logs.join("\\n"):"Noch keine Mirakl-Logs vorhanden.";',
+  '}catch(err){',
+    'var el=document.getElementById("mirakl-log");',
+    'if(el){el.innerText="Fehler beim Laden der Mirakl-Logs: "+err.message;}',
+  '}',
+'}',
+'document.addEventListener("DOMContentLoaded",loadMiraklLogs);',
+'setInterval(loadMiraklLogs,15000);',
       '</script>',
     '</body>',
     '</html>'
@@ -789,7 +817,7 @@ app.get('/', (req, res) => {
   res.send(renderPage(null));
 });
 
-const axios = require('axios');
+
 
 app.get('/api/mirakl/debug', async (req, res) => {
   try {
@@ -818,6 +846,86 @@ app.get('/api/mirakl/debug', async (req, res) => {
       }))
     });
 
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
+app.get('/api/env/check', (req, res) => {
+  res.json({
+    shopifyMainShop: process.env.SHOPIFY_SHOP || null,
+    shopifyMiraklShop: process.env.SHOPIFY_MIRAKL_SHOP || null,
+
+    hasMainToken: Boolean(process.env.SHOPIFY_ADMIN_TOKEN),
+    hasMiraklToken: Boolean(process.env.SHOPIFY_MIRAKL_ADMIN_TOKEN),
+
+    mainTokenPrefix: process.env.SHOPIFY_ADMIN_TOKEN
+      ? process.env.SHOPIFY_ADMIN_TOKEN.slice(0, 6)
+      : null,
+
+    miraklTokenPrefix: process.env.SHOPIFY_MIRAKL_ADMIN_TOKEN
+      ? process.env.SHOPIFY_MIRAKL_ADMIN_TOKEN.slice(0, 6)
+      : null,
+
+    miraklTokenLength: process.env.SHOPIFY_MIRAKL_ADMIN_TOKEN
+      ? process.env.SHOPIFY_MIRAKL_ADMIN_TOKEN.length
+      : 0
+  });
+});
+
+
+app.get('/api/mirakl/logs', (req, res) => {
+  try {
+    const file = 'C:\\DocMorris-Logs\\mirakl-autoprint.log';
+
+    if (!fs.existsSync(file)) {
+      return res.json({ ok: true, logs: [] });
+    }
+
+    const logs = fs.readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .slice(-120);
+
+    res.json({ ok: true, logs });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+
+
+app.get('/api/shopify/mirakl-token-test', async (req, res) => {
+  try {
+    const shop = process.env.SHOPIFY_MIRAKL_SHOP;
+    const clientId = process.env.SHOPIFY_MIRAKL_CLIENT_ID;
+    const clientSecret = process.env.SHOPIFY_MIRAKL_CLIENT_SECRET;
+
+    const tokenRes = await axios.post(
+      `https://${shop}/admin/oauth/access_token`,
+      {
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: clientSecret
+      },
+      {
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+
+    res.json({
+      ok: true,
+      tokenPrefix: String(tokenRes.data.access_token || '').slice(0, 8),
+      tokenLength: String(tokenRes.data.access_token || '').length,
+      expiresIn: tokenRes.data.expires_in || null,
+      scope: tokenRes.data.scope || null
+    });
   } catch (err) {
     res.status(500).json({
       ok: false,
@@ -868,6 +976,123 @@ app.get('/api/mirakl/tracking-debug', async (req, res) => {
   }
 });
 
+
+app.get('/api/shopify/debug', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+
+    if (!q) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Bitte Suchbegriff angeben, z. B. ?q=50690517'
+      });
+    }
+
+    const shop = process.env.SHOPIFY_SHOP;
+    const token = process.env.SHOPIFY_ADMIN_TOKEN;
+
+    const r = await axios.get(`https://${shop}/admin/api/2025-01/orders.json`, {
+      headers: {
+        'X-Shopify-Access-Token': token
+      },
+      params: {
+        status: 'any',
+        limit: 50,
+        query: q
+      }
+    });
+
+    res.json({
+      ok: true,
+      count: r.data.orders ? r.data.orders.length : 0,
+      orders: (r.data.orders || []).map(o => ({
+        id: o.id,
+        name: o.name,
+        email: o.email,
+        phone: o.phone,
+        created_at: o.created_at,
+        financial_status: o.financial_status,
+        fulfillment_status: o.fulfillment_status,
+        tags: o.tags,
+        note: o.note,
+        source_name: o.source_name,
+        customer: o.customer ? {
+          first_name: o.customer.first_name,
+          last_name: o.customer.last_name,
+          email: o.customer.email
+        } : null,
+        shipping_address: o.shipping_address,
+        fulfillments: o.fulfillments
+      }))
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
+
+app.get('/api/shopify/recent-debug', async (req, res) => {
+  try {
+    const shop = process.env.SHOPIFY_MIRAKL_SHOP;
+
+const tokenRes = await axios.post(
+  `https://${shop}/admin/oauth/access_token`,
+  {
+    grant_type: 'client_credentials',
+    client_id: process.env.SHOPIFY_MIRAKL_CLIENT_ID,
+    client_secret: process.env.SHOPIFY_MIRAKL_CLIENT_SECRET
+  },
+  {
+    headers: { 'Content-Type': 'application/json' }
+  }
+);
+
+const token = tokenRes.data.access_token;
+
+    const r = await axios.get(`https://${shop}/admin/api/2025-01/orders.json`, {
+      headers: {
+        'X-Shopify-Access-Token': token
+      },
+      params: {
+        status: 'any',
+        limit: 50
+      }
+    });
+
+    res.json({
+      ok: true,
+      count: r.data.orders.length,
+      orders: r.data.orders.map(o => ({
+        id: o.id,
+        name: o.name,
+        email: o.email,
+        tags: o.tags,
+        note: o.note,
+        source: o.source_name,
+        created_at: o.created_at,
+        customer: o.customer ? {
+          first: o.customer.first_name,
+          last: o.customer.last_name,
+          email: o.customer.email
+        } : null,
+        shipping: o.shipping_address,
+        fulfillments: o.fulfillments
+      }))
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
+
 app.get('/api/sendcloud/debug', async (req, res) => {
   try {
     const parcels = await getSendcloudParcels(200);
@@ -902,7 +1127,7 @@ keys: Object.keys(p)
   }
 });
 
-Dann:
+
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Dashboard V2 laeuft auf http://0.0.0.0:' + PORT);

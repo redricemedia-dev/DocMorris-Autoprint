@@ -233,6 +233,12 @@ function calculateGrossVat(gross, rate) {
   return { net, vat, gross: grossValue, rate };
 }
 
+function extractMiraklOrderId(order) {
+  const text = JSON.stringify(order || '');
+  const match = text.match(/COM-\d+-\d+-[A-Z]/);
+  return match ? match[0] : null;
+}
+
 function writeErrorReport(order, err) {
   ensureDir(ERROR_DIR);
 
@@ -810,6 +816,31 @@ function archiveLabel(base64, order) {
   return labelFile;
 }
 
+async function shipMiraklOrder(orderId, parcel) {
+  if (!parcel.tracking_number) {
+    console.log(`→ Kein Tracking für ${orderId}, überspringe`);
+    return;
+  }
+
+  const url = `${process.env.MIRAKL_BASE_URL}/api/orders/${orderId}/shipments`;
+
+  await axios.post(
+    url,
+    {
+      carrier_code: 'DHL',
+      tracking_number: parcel.tracking_number,
+      tracking_url: parcel.tracking_url
+    },
+    {
+      headers: {
+        Authorization: process.env.MIRAKL_API_KEY
+      }
+    }
+  );
+
+  console.log(`→ Mirakl Order ${orderId} als versendet markiert`);
+}
+
 async function processOrder(order) {
   if (processing.has(order.id)) {
     console.log(`→ ${order.name} wird bereits verarbeitet`);
@@ -845,7 +876,8 @@ async function processOrder(order) {
       const base64 = await downloadLabel(labelUrl);
 
       archiveLabel(base64, order);
-
+const miraklOrderId = extractMiraklOrderId(order);
+console.log('→ Mirakl Order ID:', miraklOrderId || 'keine');
       await printLabel(base64, order.name);
       console.log('→ Label gedruckt');
 
@@ -872,7 +904,8 @@ async function processOrder(order) {
 
     const labelUrl = parcel.label?.label_printer || parcel.label?.normal_printer;
     const base64 = await downloadLabel(labelUrl);
-
+const miraklOrderId = extractMiraklOrderId(order);
+console.log('→ Mirakl Order ID:', miraklOrderId || 'keine');
     archiveLabel(base64, order);
 
     await printLabel(base64, order.name);
