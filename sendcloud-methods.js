@@ -1,31 +1,29 @@
-require('dotenv').config();
+require('dotenv').config({ path: 'C:\\docmorris-auto\\.env' });
+
 const axios = require('axios');
 
-const PUBLIC_KEY = process.env.SENDCLOUD_PUBLIC_KEY;
-const PRIVATE_KEY = process.env.SENDCLOUD_PRIVATE_KEY;
+const WANT = ['dhl', 'deutsche', 'warenpost', 'parcel', 'paket'];
 
 async function main() {
-  try {
-    const res = await axios.get('https://panel.sendcloud.sc/api/v2/shipping_methods', {
-      auth: {
-        username: PUBLIC_KEY,
-        password: PRIVATE_KEY
-      }
-    });
+  const res = await axios.get('https://panel.sendcloud.sc/api/v2/shipping_methods', {
+    auth: {
+      username: process.env.SENDCLOUD_PUBLIC_KEY,
+      password: process.env.SENDCLOUD_PRIVATE_KEY
+    }
+  });
 
-    res.data.shipping_methods.forEach(method => {
-      console.log('---');
-      console.log('ID:', method.id);
-      console.log('Name:', method.name);
-      console.log('Carrier:', method.carrier);
-      console.log('Min weight:', method.min_weight);
-      console.log('Max weight:', method.max_weight);
-      console.log('Countries:', method.countries?.map(c => c.iso_2).join(', '));
-    });
-  } catch (err) {
-    console.error('FEHLER:');
-    console.error(err.response?.data || err.message);
+  const methods = res.data.shipping_methods || [];
+
+  const filtered = methods.filter(m => {
+    const text = `${m.id} ${m.name} ${m.carrier} ${JSON.stringify(m.countries)}`.toLowerCase();
+    return WANT.some(w => text.includes(w));
+  });
+
+  for (const m of filtered) {
+    console.log(`ID=${m.id} | ${m.name} | carrier=${m.carrier}`);
   }
 }
 
-main();
+main().catch(err => {
+  console.error(err.response?.data || err.message);
+});

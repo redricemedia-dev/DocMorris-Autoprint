@@ -1,18 +1,17 @@
-require('dotenv').config({ path: 'C:\\docmorris-auto\\.env' });
+require('dotenv').config();
 
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const QRCode = require('qrcode');
-
 const DRY_RUN = false;
-const ENABLE_PRINT = true;
+const ENABLE_PRINT = false; // erst wieder auf true, wenn Matching stabil ist
 
 const PRINTED_FILE = 'C:\\docmorris-auto\\printed-mirakl.json';
 const MIRAKL_LOG_FILE = 'C:\\DocMorris-Logs\\mirakl-autoprint.log';
 
-const SHIPPING_METHOD = Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID || 89);
+const SHIPPING_METHOD = Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID);
 const DEFAULT_WEIGHT = process.env.SENDCLOUD_DEFAULT_WEIGHT || '0.5';
 
 const SHOP = process.env.SHOPIFY_MIRAKL_SHOP;
@@ -37,7 +36,6 @@ const LOGO_URL = process.env.LOGO_URL || '';
 const COMPANY_FOOTER =
   process.env.COMPANY_FOOTER ||
   'VitaSanum GmbH · Königsallee 27 · 40212 Düsseldorf · Germany';
-
 function logMirakl(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   console.log(message);
@@ -74,32 +72,6 @@ function markPrinted(orderId) {
   }
 }
 
-function validateEnv() {
-  const required = {
-    SHOPIFY_MIRAKL_SHOP: SHOP,
-    SHOPIFY_MIRAKL_CLIENT_ID: CLIENT_ID,
-    SHOPIFY_MIRAKL_CLIENT_SECRET: CLIENT_SECRET,
-    SENDCLOUD_PUBLIC_KEY,
-    SENDCLOUD_PRIVATE_KEY,
-    MIRAKL_BASE_URL,
-    MIRAKL_API_KEY,
-    PRINTNODE_API_KEY,
-    PRINTNODE_PRINTER_ID_LABEL: process.env.PRINTNODE_PRINTER_ID_LABEL
-  };
-
-  const missing = Object.entries(required)
-    .filter(([, value]) => !value)
-    .map(([key]) => key);
-
-  if (missing.length) {
-    throw new Error(`Fehlende .env Werte: ${missing.join(', ')}`);
-  }
-
-  if (!SHIPPING_METHOD || Number.isNaN(SHIPPING_METHOD)) {
-    throw new Error('SENDCLOUD_SHIPPING_METHOD_ID ist leer oder ungültig.');
-  }
-}
-
 async function getShopifyToken() {
   const res = await axios.post(
     `https://${SHOP}/admin/oauth/access_token`,
@@ -129,7 +101,7 @@ async function getShopifyOrders(limit = 50) {
   return res.data.orders || [];
 }
 
-async function getSendcloudParcels(limit = 1000) {
+async function getSendcloudParcels(limit = 250) {
   const res = await axios.get('https://panel.sendcloud.sc/api/v2/parcels', {
     auth: {
       username: SENDCLOUD_PUBLIC_KEY,
@@ -144,42 +116,12 @@ async function getSendcloudParcels(limit = 1000) {
   return res.data.parcels || [];
 }
 
-function extractMiraklOrderId(order) {
-  const text = JSON.stringify(order || {});
-  const match = text.match(/\b[A-Z]{2,3}-\d+-\d+-[A-Z]\b/);
-  return match ? match[0] : null;
-}
 
-function findParcelForOrder(miraklOrderId, parcels) {
-  const needle = String(miraklOrderId || '').toLowerCase();
-
-  return parcels.find(p =>
-    String(p.order_number || '').toLowerCase() === needle
-  );
-}
-
-function extractLabelUrl(parcel) {
-  return (
-    parcel?.label?.label_printer ||
-    parcel?.label?.normal_printer?.[0] ||
-    parcel?.label?.normal_printer ||
-    parcel?.documents?.label ||
-    null
-  );
-}
 
 async function createParcel(order) {
   const a = order.shipping_address;
 
-  if (!a) {
-    throw new Error(`Keine Versandadresse vorhanden: ${order.name}`);
-  }
-
-  const countryCode = String(a.country_code || 'DE').toUpperCase();
-
-  if (countryCode !== 'DE') {
-    throw new Error(`Ausland ${countryCode}: kein automatisches Sendcloud-Label`);
-  }
+  if (!a) throw new Error(`Keine Versandadresse vorhanden: ${order.name}`);
 
   const res = await axios.post(
     'https://panel.sendcloud.sc/api/v2/parcels',
@@ -192,17 +134,15 @@ async function createParcel(order) {
         house_number: '',
         city: a.city || '',
         postal_code: a.zip || '',
-        country: countryCode,
+        country: a.country_code || 'DE',
         email: order.email || '',
         telephone: a.phone || order.phone || '',
         weight: DEFAULT_WEIGHT,
         order_number: order.name,
         external_order_id: order.admin_graphql_api_id,
         external_reference: String(order.id),
-        shipment: {
-          id: SHIPPING_METHOD
-        },
-        request_label: true
+        //shipping_method: SHIPPING_METHOD,
+        request_label: false
       }
     },
     {
@@ -215,28 +155,20 @@ async function createParcel(order) {
 
   return res.data.parcel;
 }
+function extractMiraklOrderId(order) {
+  const text = JSON.stringify(order || {});
+  const match = text.match(/\b[A-Z]{2,3}-\d+-\d+-[A-Z]\b/);
+  return match ? match[0] : null;
+}
 
-async function requestSendcloudLabel(parcel) {
-  const res = await axios.put(
-    `https://panel.sendcloud.sc/api/v2/parcels/${parcel.id}`,
-    {
-      parcel: {
-        id: parcel.id,
-        shipment: {
-          id: SHIPPING_METHOD
-        },
-        request_label: true
-      }
-    },
-    {
-      auth: {
-        username: SENDCLOUD_PUBLIC_KEY,
-        password: SENDCLOUD_PRIVATE_KEY
-      }
-    }
+
+
+function findParcelForOrder(miraklOrderId, parcels) {
+  const needle = String(miraklOrderId || '').toLowerCase();
+
+  return parcels.find(p =>
+    String(p.order_number || '').toLowerCase() === needle
   );
-
-  return res.data.parcel;
 }
 
 async function findMiraklOrderByReference(reference) {
@@ -281,6 +213,7 @@ async function shipMiraklOrder(orderId) {
     );
 
     return { ok: true, alreadyShipped: false, notReady: false };
+
   } catch (err) {
     const msg = JSON.stringify(err.response?.data || err.message);
 
@@ -336,6 +269,7 @@ async function printLabel(base64, orderName) {
     base64
   });
 }
+
 
 function escapeHtml(value) {
   return String(value == null ? '' : value)
@@ -525,22 +459,20 @@ async function maybePrintLabel(order, miraklOrderId, parcel) {
     return;
   }
 
-  const labelUrl = extractLabelUrl(parcel);
+  const labelUrl = parcel.label?.label_printer || parcel.label?.normal_printer?.[0];
 
   if (!labelUrl) {
     logMirakl(`WAIT ${order.name} / ${miraklOrderId}: keine Label-URL vorhanden`);
     return;
   }
 
-  const labelBase64 = await downloadLabel(labelUrl);
   await printLabel(labelBase64, order.name);
+logMirakl(`PRINT ${order.name} / ${miraklOrderId}: Label gedruckt`);
 
-  logMirakl(`PRINT ${order.name} / ${miraklOrderId}: Label gedruckt`);
+await printPackingSlipForOrder(order);
+logMirakl(`PRINT ${order.name} / ${miraklOrderId}: Lieferschein gedruckt`);
 
-  await printPackingSlipForOrder(order);
-  logMirakl(`PRINT ${order.name} / ${miraklOrderId}: Lieferschein gedruckt`);
-
-  markPrinted(miraklOrderId);
+markPrinted(miraklOrderId);
 }
 
 async function main() {
@@ -549,50 +481,95 @@ async function main() {
   const orders = await getShopifyOrders(50);
   const parcels = await getSendcloudParcels(1000);
 
+  
+
+//console.log('--- PARCEL SAMPLE ---');
+parcels.slice(0,5).forEach(p => {
+  console.log({
+    order_number: p.order_number,
+    external_reference: p.external_reference,
+    name: p.name,
+    email: p.email,
+    city: p.city,
+    postal_code: p.postal_code
+  });
+});
+
+const debugHits = parcels.filter(p => {
+  const t = JSON.stringify(p).toLowerCase();
+  return (
+    t.includes('maria') ||
+    t.includes('carlino') ||
+    t.includes('58091') ||
+    t.includes('hagen') ||
+    t.includes('monika') ||
+    t.includes('knöppel') ||
+    t.includes('knoeppel') ||
+    t.includes('2531') ||
+    t.includes('gaaden')
+  );
+});
+
+console.log('--- DEBUG HITS camilla/buchwald/arco/38062 ---');
+console.log(JSON.stringify(debugHits.map(p => ({
+  id: p.id,
+  order_number: p.order_number,
+  external_order_id: p.external_order_id,
+  external_reference: p.external_reference,
+  external_shipment_id: p.external_shipment_id,
+  reference: p.reference,
+  name: p.name,
+  email: p.email,
+  city: p.city,
+  postal_code: p.postal_code,
+  tracking_number: p.tracking_number,
+  data: p.data,
+  parcel_items: p.parcel_items
+})), null, 2));
+
+
+//console.log('--- DEBUG HITS END ---');
+
+
+
   console.log('Shopify Orders:', orders.length);
   console.log('Sendcloud Parcels:', parcels.length);
 
-  for (const order of orders) {
-    console.log('Name:', order.name);
-    console.log('Email:', order.email);
-    console.log('Ship Name:', order.shipping_address?.name);
-    console.log('ZIP:', order.shipping_address?.zip);
-    console.log('City:', order.shipping_address?.city);
-    console.log('Country:', order.shipping_address?.country_code);
-    console.log('-------------------');
+for (const order of orders) {
 
-    const miraklOrderId = extractMiraklOrderId(order);
+ // console.log('--- ORDER DEBUG ---');
+  console.log('Name:', order.name);
+  console.log('Email:', order.email);
+  console.log('Ship Name:', order.shipping_address?.name);
+  console.log('ZIP:', order.shipping_address?.zip);
+  console.log('City:', order.shipping_address?.city);
+  console.log('-------------------');
+
+  const miraklOrderId = extractMiraklOrderId(order);
 
     if (!miraklOrderId) {
       console.log(`SKIP ${order.name}: keine Mirakl-ID gefunden`);
       continue;
     }
 
-    const countryCode = String(order.shipping_address?.country_code || 'DE').toUpperCase();
+   
 
-    if (countryCode !== 'DE') {
-      logMirakl(`SKIP ${order.name} / ${miraklOrderId}: Ausland ${countryCode}, kein Autolabel`);
-      continue;
-    }
+   let parcel = findParcelForOrder(miraklOrderId, parcels);
 
-    let parcel = findParcelForOrder(miraklOrderId, parcels);
+if (!parcel) {
+  logMirakl(`CREATE ${order.name} / ${miraklOrderId}: Sendcloud Parcel wird erstellt`);
+  parcel = await createParcel(order);
+  logMirakl(`CREATE ${order.name} / ${miraklOrderId}: Sendcloud Parcel erstellt`);
 
-    if (!parcel) {
-      logMirakl(`CREATE ${order.name} / ${miraklOrderId}: Sendcloud Parcel wird erstellt`);
-      parcel = await createParcel(order);
-      logMirakl(`CREATE ${order.name} / ${miraklOrderId}: Sendcloud Parcel erstellt`);
-    }
+  if (!parcel.tracking_number) {
+    logMirakl(`WAIT ${order.name} / ${miraklOrderId}: Parcel erstellt, aber noch kein Tracking`);
+    continue;
+  }
+}
 
     if (!parcel.tracking_number) {
-      logMirakl(`LABEL ${order.name} / ${miraklOrderId}: Parcel da, fordere Label an`);
-      parcel = await requestSendcloudLabel(parcel);
-
-      if (!parcel.tracking_number) {
-        logMirakl(`WAIT ${order.name} / ${miraklOrderId}: Label angefordert, aber noch kein Tracking`);
-        continue;
-      }
-
-      logMirakl(`LABEL ${order.name} / ${miraklOrderId}: Tracking erhalten ${parcel.tracking_number}`);
+      logMirakl(`WAIT ${order.name} / ${miraklOrderId}: Parcel da, aber kein Tracking`);
+      continue;
     }
 
     logMirakl(`READY ${order.name} / ${miraklOrderId}: ${parcel.tracking_number}`);
@@ -645,8 +622,6 @@ async function main() {
 }
 
 async function loop() {
-  validateEnv();
-
   while (true) {
     try {
       console.log('\n=== MIRAKL AUTOPRINT SCAN ===', new Date().toISOString());
