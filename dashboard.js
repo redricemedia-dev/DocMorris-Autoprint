@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: 'C:\\docmorris-auto\\.env' });
 
 const express = require('express');
 const fs = require('fs');
@@ -8,25 +8,30 @@ const { getWooCommerceOrders, fulfillWooOrder } = require('./marketplace-woocomm
 
 const app = express();
 
-const PORT = 3002;
+const PORT = Number(process.env.DASHBOARD_PORT || 3002);
 const STATUS_FILE = process.env.STATUS_FILE || 'C:\\docmorris-auto\\status.json';
 
-const INVOICE_DIR = process.env.INVOICE_DIR || 'C:\\DocMorris-Rechnungen';
-const PRINT_ARCHIVE_DIR = process.env.PRINT_ARCHIVE_DIR || 'C:\\DocMorris-Druckarchiv';
+const INVOICE_DIR = process.env.INVOICE_DIR || 'G:\\DocMorris-Rechnungen';
+const PRINT_ARCHIVE_DIR = process.env.PRINT_ARCHIVE_DIR || 'G:\\DocMorris-Druckarchiv';
 const LABEL_ARCHIVE_DIR = path.join(PRINT_ARCHIVE_DIR, 'labels');
 const SLIP_ARCHIVE_DIR = path.join(PRINT_ARCHIVE_DIR, 'lieferscheine');
 const RETURN_ARCHIVE_DIR = process.env.RETURN_ARCHIVE_DIR || path.join(PRINT_ARCHIVE_DIR, 'retouren');
 
-const LOG_DIR = process.env.LOG_DIR || 'C:\\DocMorris-Logs';
-const ERROR_DIR = process.env.ERROR_DIR || 'C:\\DocMorris-Fehler';
+const LOG_DIR = process.env.LOG_DIR || 'G:\\DocMorris-Logs';
+const ERROR_DIR = process.env.ERROR_DIR || 'G:\\DocMorris-Fehler';
 const SKIP_FILE = process.env.SKIP_FILE || path.join(ERROR_DIR, 'skip-orders.json');
 
 const APP_DIR = process.env.APP_DIR || 'C:\\docmorris-auto';
-const AUTOPRINT_PROCESS = process.env.AUTOPRINT_PROCESS || 'autoprint';
-const DASHBOARD_PROCESS = process.env.DASHBOARD_PROCESS || 'dashboard';
+const DOCMORRIS_PROCESS = process.env.DOCMORRIS_PROCESS || 'docmorris-autoprint';
+const MIRAKL_DE_PROCESS = process.env.MIRAKL_DE_PROCESS || 'mirakl-autoprint-de';
+const MIRAKL_UPS_PROCESS = process.env.MIRAKL_UPS_PROCESS || 'mirakl-ups';
+const DASHBOARD_PROCESS = process.env.DASHBOARD_PROCESS || 'docmorris-dashboard';
 
-const APP_VERSION = process.env.APP_VERSION || '1.0.0';
-const APP_BUILD = process.env.APP_BUILD || 'v2';
+const MIRAKL_LOG_FILE = process.env.MIRAKL_LOG_FILE || 'G:\\DocMorris-Logs\\mirakl-autoprint.log';
+const PRINTED_MIRAKL_FILE = process.env.PRINTED_MIRAKL_FILE || 'C:\\docmorris-auto\\printed-mirakl.json';
+
+const APP_VERSION = process.env.APP_VERSION || '1.1.0';
+const APP_BUILD = process.env.APP_BUILD || 'v3';
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
@@ -52,6 +57,19 @@ function readJson(file, fallback) {
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+}
+
+function safeReadText(file) {
+  try {
+    if (!fs.existsSync(file)) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function tailLines(text, count = 120) {
+  return String(text || '').split(/\r?\n/).filter(Boolean).slice(-count);
 }
 
 function readStatus() {
@@ -96,13 +114,11 @@ function readSkips() {
 function readLogs() {
   const today = new Date().toISOString().slice(0, 10);
   const file = path.join(LOG_DIR, 'autoprint_' + today + '.log');
+  return tailLines(safeReadText(file), 120);
+}
 
-  if (!fs.existsSync(file)) return [];
-
-  return fs.readFileSync(file, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .slice(-120);
+function readMiraklLogs() {
+  return tailLines(safeReadText(MIRAKL_LOG_FILE), 160);
 }
 
 function readPdfList(dir) {
@@ -113,10 +129,7 @@ function readPdfList(dir) {
     .map(file => {
       const fullPath = path.join(dir, file);
       const stat = fs.statSync(fullPath);
-      return {
-        file,
-        created: stat.mtime
-      };
+      return { file, created: stat.mtime };
     })
     .sort((a, b) => b.created - a.created)
     .slice(0, 50);
@@ -134,19 +147,34 @@ function getHealthStats() {
   };
 }
 
+function getMiraklStats() {
+  const lines = readMiraklLogs();
+  const printed = readJson(PRINTED_MIRAKL_FILE, []);
+  const safePrinted = Array.isArray(printed) ? printed : [];
+
+  return {
+    ready: lines.filter(x => x.includes('READY ')).length,
+    done: lines.filter(x => x.includes('DONE ')).length,
+    skip: lines.filter(x => x.includes('SKIP ')).length,
+    wait: lines.filter(x => x.includes('WAIT ')).length,
+    print: lines.filter(x => x.includes('PRINT ')).length,
+    error: lines.filter(x => x.toLowerCase().includes('error') || x.toLowerCase().includes('fehler')).length,
+    printedTotal: safePrinted.length,
+    lastLines: lines
+  };
+}
+
 function getOrderFromInvoiceFile(file) {
   const name = String(file || '').replace(/\.pdf$/i, '');
   const parts = name.split('_');
-
   if (parts.length >= 3) return parts[2];
   if (parts.length >= 2) return parts[1];
-
   return name;
 }
 
 function runCommand(command) {
   return new Promise(resolve => {
-    exec(command, { cwd: APP_DIR }, (error, stdout, stderr) => {
+    exec(command, { cwd: APP_DIR, windowsHide: true }, (error, stdout, stderr) => {
       resolve({
         command,
         ok: !error,
@@ -156,6 +184,52 @@ function runCommand(command) {
       });
     });
   });
+}
+
+async function getPm2Processes() {
+  const result = await runCommand('pm2.cmd jlist');
+  if (!result.ok) return [];
+
+  try {
+    const list = JSON.parse(result.stdout || '[]');
+    return list.map(p => ({
+      id: p.pm_id,
+      name: p.name,
+      status: p.pm2_env?.status || '-',
+      restarts: p.pm2_env?.restart_time || 0,
+      memory: p.monit?.memory || 0,
+      cpu: p.monit?.cpu || 0,
+      script: p.pm2_env?.pm_exec_path || '-'
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = n;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value = value / 1024;
+    i++;
+  }
+  return value.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+async function getDiskStats() {
+  const command = 'powershell -NoProfile -Command "Get-PSDrive -Name C,G | Select-Object Name,Used,Free | ConvertTo-Json -Compress"';
+  const result = await runCommand(command);
+  if (!result.ok) return [];
+
+  try {
+    const parsed = JSON.parse(result.stdout || '[]');
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
 }
 
 function renderActionResult(result) {
@@ -172,72 +246,49 @@ function renderActionResult(result) {
 }
 
 function renderPostOnlyError(route) {
-  return renderPage({
-    command: 'GET ' + route,
-    ok: false,
-    stdout: '',
-    stderr: '',
-    error: 'Diese Aktion muss ueber den Button im Dashboard ausgefuehrt werden.'
-  });
+  return renderPage({ command: 'GET ' + route, ok: false, stdout: '', stderr: '', error: 'Diese Aktion muss ueber den Button im Dashboard ausgefuehrt werden.' });
 }
 
-app.post('/control/start', async (req, res) => {
-  const result = await runCommand('pm2 start autopilot.js --name ' + AUTOPRINT_PROCESS);
-  res.send(renderPage(result));
+async function renderPageAsync(actionResult) {
+  const processes = await getPm2Processes();
+  const disks = await getDiskStats();
+  return renderPage(actionResult, { processes, disks });
+}
+
+function processCommand(processName, action) {
+  const safe = String(processName || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!safe) return null;
+  if (!['start', 'stop', 'restart'].includes(action)) return null;
+  if (action === 'restart') return 'pm2.cmd restart ' + safe + ' --update-env';
+  return 'pm2.cmd ' + action + ' ' + safe;
+}
+
+app.post('/control/process/:action/:process', async (req, res) => {
+  const command = processCommand(req.params.process, req.params.action);
+  if (!command) return res.send(await renderPageAsync({ command: 'process control', ok: false, error: 'Ungueltige Aktion.' }));
+  const result = await runCommand(command);
+  res.send(await renderPageAsync(result));
 });
 
-app.post('/control/stop', async (req, res) => {
-  const result = await runCommand('pm2 stop ' + AUTOPRINT_PROCESS);
-  res.send(renderPage(result));
-});
-
-app.post('/control/restart', async (req, res) => {
-  const result = await runCommand('pm2 restart ' + AUTOPRINT_PROCESS + ' --update-env');
-  res.send(renderPage(result));
-});
-
-app.post('/control/restart-dashboard', async (req, res) => {
-  const result = await runCommand('pm2 restart ' + DASHBOARD_PROCESS + ' --update-env');
-  res.send(renderPage(result));
-});
-
-app.post('/control/restart-all', async (req, res) => {
-  const result = await runCommand('pm2 restart all --update-env');
-  res.send(renderPage(result));
-});
-
-app.post('/control/pm2-list', async (req, res) => {
-  const result = await runCommand('pm2 list');
-  res.send(renderPage(result));
-});
-
-app.post('/control/git-status', async (req, res) => {
-  const result = await runCommand('git status');
-  res.send(renderPage(result));
-});
-
-app.post('/control/git-log', async (req, res) => {
-  const result = await runCommand('git log --oneline -8');
-  res.send(renderPage(result));
-});
-
-app.post('/control/git-backup', async (req, res) => {
-  const result = await runCommand('git add . && git commit -m "manual dashboard backup" && git push');
-  res.send(renderPage(result));
-});
+app.post('/control/start', async (req, res) => res.send(await renderPageAsync(await runCommand('pm2.cmd start autopilot.js --name ' + DOCMORRIS_PROCESS))));
+app.post('/control/stop', async (req, res) => res.send(await renderPageAsync(await runCommand('pm2.cmd stop ' + DOCMORRIS_PROCESS))));
+app.post('/control/restart', async (req, res) => res.send(await renderPageAsync(await runCommand('pm2.cmd restart ' + DOCMORRIS_PROCESS + ' --update-env'))));
+app.post('/control/restart-dashboard', async (req, res) => res.send(await renderPageAsync(await runCommand('pm2.cmd restart ' + DASHBOARD_PROCESS + ' --update-env'))));
+app.post('/control/restart-all', async (req, res) => res.send(await renderPageAsync(await runCommand('pm2.cmd restart all --update-env'))));
+app.post('/control/pm2-list', async (req, res) => res.send(await renderPageAsync(await runCommand('pm2.cmd list'))));
+app.post('/control/git-status', async (req, res) => res.send(await renderPageAsync(await runCommand('git status'))));
+app.post('/control/git-log', async (req, res) => res.send(await renderPageAsync(await runCommand('git log --oneline -8'))));
+app.post('/control/git-backup', async (req, res) => res.send(await renderPageAsync(await runCommand('git add . && git commit -m "manual dashboard backup" && git push'))));
 
 app.post('/control/retry-order', async (req, res) => {
   const order = String(req.body.order || '').trim();
-
-  if (!order) {
-    return res.send(renderPage({ command: 'retry order', ok: false, error: 'Keine Bestellnummer.' }));
-  }
+  if (!order) return res.send(await renderPageAsync({ command: 'retry order', ok: false, error: 'Keine Bestellnummer.' }));
 
   const skips = readSkips().filter(x => x !== order);
   writeJson(SKIP_FILE, skips);
 
-  const result = await runCommand('pm2 restart ' + AUTOPRINT_PROCESS + ' --update-env');
-  res.send(renderPage({
+  const result = await runCommand('pm2.cmd restart ' + DOCMORRIS_PROCESS + ' --update-env');
+  res.send(await renderPageAsync({
     command: 'retry ' + order,
     ok: result.ok,
     stdout: 'Bestellung wurde freigegeben: ' + order + '\n\n' + result.stdout,
@@ -246,62 +297,34 @@ app.post('/control/retry-order', async (req, res) => {
   }));
 });
 
-app.post('/control/remove-skip', (req, res) => {
+app.post('/control/remove-skip', async (req, res) => {
   const order = String(req.body.order || '').trim();
   const skips = readSkips().filter(x => x !== order);
   writeJson(SKIP_FILE, skips);
-
-  res.send(renderPage({
-    command: 'remove skip ' + order,
-    ok: true,
-    stdout: 'Bestellung wurde aus der Skip-Liste entfernt: ' + order,
-    stderr: '',
-    error: ''
-  }));
+  res.send(await renderPageAsync({ command: 'remove skip ' + order, ok: true, stdout: 'Bestellung wurde aus der Skip-Liste entfernt: ' + order, stderr: '', error: '' }));
 });
 
-app.post('/control/clear-skips', (req, res) => {
+app.post('/control/clear-skips', async (req, res) => {
   writeJson(SKIP_FILE, []);
-  res.send(renderPage({
-    command: 'clear skip-orders.json',
-    ok: true,
-    stdout: 'Skip-Liste wurde geleert.',
-    stderr: '',
-    error: ''
-  }));
+  res.send(await renderPageAsync({ command: 'clear skip-orders.json', ok: true, stdout: 'Skip-Liste wurde geleert.', stderr: '', error: '' }));
 });
 
 app.post('/control/reprint-invoice', async (req, res) => {
   const order = String(req.body.order || '').trim();
-
-  if (!order) {
-    return res.send(renderPage({ command: 'node reprint-invoice.js', ok: false, error: 'Keine Bestellnummer.' }));
-  }
-
-  const result = await runCommand('node reprint-invoice.js ' + order);
-  res.send(renderPage(result));
+  if (!order) return res.send(await renderPageAsync({ command: 'node reprint-invoice.js', ok: false, error: 'Keine Bestellnummer.' }));
+  res.send(await renderPageAsync(await runCommand('node reprint-invoice.js ' + order)));
 });
 
 app.post('/control/reprint-packing-slip', async (req, res) => {
   const order = String(req.body.order || '').trim();
-
-  if (!order) {
-    return res.send(renderPage({ command: 'node reprint-packing-slip.js', ok: false, error: 'Keine Bestellnummer.' }));
-  }
-
-  const result = await runCommand('node reprint-packing-slip.js ' + order);
-  res.send(renderPage(result));
+  if (!order) return res.send(await renderPageAsync({ command: 'node reprint-packing-slip.js', ok: false, error: 'Keine Bestellnummer.' }));
+  res.send(await renderPageAsync(await runCommand('node reprint-packing-slip.js ' + order)));
 });
 
 app.post('/control/create-return-label', async (req, res) => {
   const order = String(req.body.order || '').trim();
-
-  if (!order) {
-    return res.send(renderPage({ command: 'node create-return-label.js', ok: false, error: 'Keine Bestellnummer.' }));
-  }
-
-  const result = await runCommand('node create-return-label.js ' + order);
-  res.send(renderPage(result));
+  if (!order) return res.send(await renderPageAsync({ command: 'node create-return-label.js', ok: false, error: 'Keine Bestellnummer.' }));
+  res.send(await renderPageAsync(await runCommand('node create-return-label.js ' + order)));
 });
 
 app.post('/control/fulfill-woo', async (req, res) => {
@@ -310,85 +333,105 @@ app.post('/control/fulfill-woo', async (req, res) => {
   const trackingUrl = String(req.body.url || '').trim();
 
   if (!orderId || !tracking || tracking === '-') {
-    return res.send(renderPage({
-      command: 'fulfill woo',
-      ok: false,
-      stdout: '',
-      stderr: '',
-      error: 'Keine gueltige Trackingnummer vorhanden.'
-    }));
+    return res.send(await renderPageAsync({ command: 'fulfill woo', ok: false, stdout: '', stderr: '', error: 'Keine gueltige Trackingnummer vorhanden.' }));
   }
 
   try {
     await fulfillWooOrder(orderId, tracking, trackingUrl);
-
-    res.send(renderPage({
-      command: 'fulfill woo ' + orderId,
-      ok: true,
-      stdout: 'WooCommerce-Bestellung wurde auf completed gesetzt.',
-      stderr: '',
-      error: ''
-    }));
+    res.send(await renderPageAsync({ command: 'fulfill woo ' + orderId, ok: true, stdout: 'WooCommerce-Bestellung wurde auf completed gesetzt.', stderr: '', error: '' }));
   } catch (err) {
-    res.send(renderPage({
-      command: 'fulfill woo',
-      ok: false,
-      stdout: '',
-      stderr: '',
-      error: JSON.stringify((err.response && err.response.data) || err.message, null, 2)
-    }));
+    res.send(await renderPageAsync({ command: 'fulfill woo', ok: false, stdout: '', stderr: '', error: JSON.stringify((err.response && err.response.data) || err.message, null, 2) }));
   }
 });
 
 [
-  '/control/start',
-  '/control/stop',
-  '/control/restart',
-  '/control/restart-dashboard',
-  '/control/restart-all',
-  '/control/pm2-list',
-  '/control/git-status',
-  '/control/git-log',
-  '/control/git-backup',
-  '/control/retry-order',
-  '/control/remove-skip',
-  '/control/clear-skips',
-  '/control/reprint-invoice',
-  '/control/reprint-packing-slip',
-  '/control/create-return-label',
-  '/control/fulfill-woo'
-].forEach(route => {
-  app.get(route, (req, res) => res.send(renderPostOnlyError(route)));
-});
+  '/control/start', '/control/stop', '/control/restart', '/control/restart-dashboard', '/control/restart-all',
+  '/control/pm2-list', '/control/git-status', '/control/git-log', '/control/git-backup', '/control/retry-order',
+  '/control/remove-skip', '/control/clear-skips', '/control/reprint-invoice', '/control/reprint-packing-slip',
+  '/control/create-return-label', '/control/fulfill-woo'
+].forEach(route => app.get(route, async (req, res) => res.send(await renderPageAsync({ command: 'GET ' + route, ok: false, error: 'Diese Aktion muss ueber den Button im Dashboard ausgefuehrt werden.' }))));
 
 app.get('/api/woocommerce/orders', async (req, res) => {
   try {
     const orders = await getWooCommerceOrders(20);
     res.json({ ok: true, orders });
   } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: (err.response && err.response.data) || err.message
-    });
+    res.status(500).json({ ok: false, error: (err.response && err.response.data) || err.message });
   }
 });
+
+app.get('/api/pm2', async (req, res) => res.json({ ok: true, processes: await getPm2Processes() }));
+app.get('/api/disk', async (req, res) => res.json({ ok: true, disks: await getDiskStats() }));
+app.get('/api/status', (req, res) => res.json(readStatus()));
+app.get('/api/errors', (req, res) => res.json({ errors: readErrors() }));
+app.get('/api/skips', (req, res) => res.json({ skips: readSkips() }));
+app.get('/api/logs', (req, res) => res.json({ logs: readLogs() }));
+app.get('/api/mirakl', (req, res) => res.json({ ok: true, stats: getMiraklStats() }));
 
 app.use('/invoices', express.static(INVOICE_DIR));
 app.use('/labels', express.static(LABEL_ARCHIVE_DIR));
 app.use('/slips', express.static(SLIP_ARCHIVE_DIR));
 app.use('/returns', express.static(RETURN_ARCHIVE_DIR));
 
-app.get('/api/status', (req, res) => res.json(readStatus()));
-app.get('/api/errors', (req, res) => res.json({ errors: readErrors() }));
-app.get('/api/skips', (req, res) => res.json({ skips: readSkips() }));
-app.get('/api/logs', (req, res) => res.json({ logs: readLogs() }));
+function renderStatusPill(status) {
+  const s = String(status || '-').toLowerCase();
+  const cls = s === 'online' ? 'ok' : s === 'stopped' ? 'warn' : 'bad';
+  return '<span class="pill ' + cls + '">' + esc(status || '-') + '</span>';
+}
+
+function renderProcessCards(processes) {
+  const wanted = [DOCMORRIS_PROCESS, MIRAKL_DE_PROCESS, MIRAKL_UPS_PROCESS, DASHBOARD_PROCESS];
+  const cards = wanted.map(name => {
+    const p = processes.find(x => x.name === name);
+    const status = p ? p.status : 'missing';
+    const mem = p ? formatBytes(p.memory) : '-';
+    const cpu = p ? String(p.cpu || 0) + '%' : '-';
+
+    return [
+      '<div class="mini-card">',
+        '<div class="mini-title">' + esc(name) + '</div>',
+        '<div class="mini-status">' + renderStatusPill(status) + '</div>',
+        '<div class="small">CPU ' + esc(cpu) + ' · RAM ' + esc(mem) + '</div>',
+        '<div class="mini-actions">',
+          '<form method="POST" action="/control/process/start/' + esc(name) + '"><button class="green" type="submit">Start</button></form>',
+          '<form method="POST" action="/control/process/stop/' + esc(name) + '"><button class="red" type="submit">Stop</button></form>',
+          '<form method="POST" action="/control/process/restart/' + esc(name) + '"><button class="orange" type="submit">Restart</button></form>',
+        '</div>',
+      '</div>'
+    ].join('');
+  }).join('');
+
+  return '<div class="card"><h2>Prozesse</h2><div class="mini-grid">' + cards + '</div></div>';
+}
+
+function renderDiskCards(disks) {
+  if (!disks || disks.length === 0) return '<div class="card"><h2>Speicher</h2><p class="empty warn-text">Keine Laufwerksdaten.</p></div>';
+
+  const html = disks.map(d => {
+    const used = Number(d.Used || 0);
+    const free = Number(d.Free || 0);
+    const total = used + free;
+    const percent = total ? Math.round((used / total) * 100) : 0;
+    const cls = percent > 92 ? 'badbar' : percent > 80 ? 'warnbar' : 'okbar';
+
+    return [
+      '<div class="mini-card">',
+        '<div class="mini-title">Laufwerk ' + esc(d.Name) + ':</div>',
+        '<div class="bar"><div class="bar-fill ' + cls + '" style="width:' + percent + '%"></div></div>',
+        '<div class="small">Belegt ' + esc(formatBytes(used)) + ' · Frei ' + esc(formatBytes(free)) + ' · ' + percent + '%</div>',
+      '</div>'
+    ].join('');
+  }).join('');
+
+  return '<div class="card"><h2>Speicherplatz</h2><div class="mini-grid">' + html + '</div></div>';
+}
 
 function renderStatusHeader(s, health, color) {
   return [
     '<div class="card hero-card">',
       '<div>',
-        '<h1>Fulfillment Dashboard V2</h1>',
-        '<p class="small">Version ' + esc(APP_VERSION) + ' | Build ' + esc(APP_BUILD) + ' | Test-Port ' + PORT + '</p>',
+        '<h1>Fulfillment Dashboard V3</h1>',
+        '<p class="small">Version ' + esc(APP_VERSION) + ' | Build ' + esc(APP_BUILD) + ' | Port ' + PORT + '</p>',
       '</div>',
       '<div class="status" style="color:' + color + '">' + esc(s.status) + '</div>',
     '</div>',
@@ -418,9 +461,9 @@ function renderControlCard() {
     '<div class="card">',
       '<h2>Systemsteuerung</h2>',
       '<div class="buttons">',
-        '<form method="POST" action="/control/start"><button class="green" type="submit">Autoprint starten</button></form>',
-        '<form method="POST" action="/control/stop"><button class="red" type="submit">Autoprint stoppen</button></form>',
-        '<form method="POST" action="/control/restart"><button class="orange" type="submit">Autoprint neu starten</button></form>',
+        '<form method="POST" action="/control/start"><button class="green" type="submit">DocMorris starten</button></form>',
+        '<form method="POST" action="/control/stop"><button class="red" type="submit">DocMorris stoppen</button></form>',
+        '<form method="POST" action="/control/restart"><button class="orange" type="submit">DocMorris neu starten</button></form>',
         '<form method="POST" action="/control/restart-dashboard"><button class="blue" type="submit">Dashboard neu starten</button></form>',
         '<form method="POST" action="/control/restart-all"><button class="dark" type="submit">Alles neu starten</button></form>',
         '<form method="POST" action="/control/pm2-list"><button class="gray" type="submit">PM2 Status</button></form>',
@@ -432,9 +475,7 @@ function renderControlCard() {
 }
 
 function renderErrorsCard(errors) {
-  if (errors.length === 0) {
-    return '<div class="card"><h2>Fehler</h2><p class="empty">Keine Fehler vorhanden.</p></div>';
-  }
+  if (errors.length === 0) return '<div class="card"><h2>Fehler</h2><p class="empty">Keine Fehler vorhanden.</p></div>';
 
   const rows = errors.map(e => [
     '<tr>',
@@ -454,9 +495,7 @@ function renderErrorsCard(errors) {
 }
 
 function renderSkipsCard(skips) {
-  if (skips.length === 0) {
-    return '<div class="card"><h2>Uebersprungene Bestellungen</h2><p class="empty">Keine uebersprungenen Bestellungen.</p></div>';
-  }
+  if (skips.length === 0) return '<div class="card"><h2>Uebersprungene Bestellungen</h2><p class="empty">Keine uebersprungenen Bestellungen.</p></div>';
 
   const rows = skips.map(order => [
     '<tr>',
@@ -474,31 +513,19 @@ function renderSkipsCard(skips) {
 }
 
 function renderInvoicesCard(invoices) {
-  if (invoices.length === 0) {
-    return '<div class="card"><h2>Letzte Rechnungen</h2><p class="empty">Keine Rechnungen vorhanden.</p></div>';
-  }
+  if (invoices.length === 0) return '<div class="card"><h2>Letzte Rechnungen</h2><p class="empty">Keine Rechnungen vorhanden.</p></div>';
 
   const rows = invoices.map(inv => {
     const order = getOrderFromInvoiceFile(inv.file);
-
     return [
       '<tr>',
         '<td>' + esc(inv.file) + '</td>',
         '<td>' + esc(new Date(inv.created).toLocaleString('de-DE')) + '</td>',
         '<td>',
           '<a href="/invoices/' + encodeURIComponent(inv.file) + '" target="_blank">PDF oeffnen</a>',
-          '<form method="POST" action="/control/reprint-invoice">',
-            '<input type="hidden" name="order" value="' + esc(order) + '">',
-            '<button class="blue" type="submit">Rechnung neu erzeugen</button>',
-          '</form>',
-          '<form method="POST" action="/control/reprint-packing-slip">',
-            '<input type="hidden" name="order" value="' + esc(order) + '">',
-            '<button class="orange" type="submit">Lieferschein drucken</button>',
-          '</form>',
-          '<form method="POST" action="/control/create-return-label">',
-            '<input type="hidden" name="order" value="' + esc(order) + '">',
-            '<button class="red" type="submit">Retourenlabel erstellen</button>',
-          '</form>',
+          '<form method="POST" action="/control/reprint-invoice"><input type="hidden" name="order" value="' + esc(order) + '"><button class="blue" type="submit">Rechnung neu erzeugen</button></form>',
+          '<form method="POST" action="/control/reprint-packing-slip"><input type="hidden" name="order" value="' + esc(order) + '"><button class="orange" type="submit">Lieferschein drucken</button></form>',
+          '<form method="POST" action="/control/create-return-label"><input type="hidden" name="order" value="' + esc(order) + '"><button class="red" type="submit">Retourenlabel erstellen</button></form>',
         '</td>',
       '</tr>'
     ].join('');
@@ -508,9 +535,7 @@ function renderInvoicesCard(invoices) {
 }
 
 function renderPdfArchiveCard(title, description, items, baseUrl, emptyText) {
-  if (items.length === 0) {
-    return '<div class="card"><h2>' + esc(title) + '</h2><p class="small">' + esc(description) + '</p><p class="empty">' + esc(emptyText) + '</p></div>';
-  }
+  if (items.length === 0) return '<div class="card"><h2>' + esc(title) + '</h2><p class="small">' + esc(description) + '</p><p class="empty">' + esc(emptyText) + '</p></div>';
 
   const rows = items.map(item => [
     '<tr>',
@@ -527,6 +552,24 @@ function renderLogsCard(logs) {
   return '<div class="card"><h2>Live-Log heute</h2><pre>' + esc(logs.join('\n') || 'Keine Logs vorhanden.') + '</pre></div>';
 }
 
+function renderMiraklCard(stats) {
+  return [
+    '<div class="card">',
+      '<h2>Mirakl / ShopApotheke</h2>',
+      '<div class="metric-grid">',
+        '<div class="metric"><span>READY</span><b>' + stats.ready + '</b></div>',
+        '<div class="metric"><span>DONE</span><b>' + stats.done + '</b></div>',
+        '<div class="metric"><span>SKIP</span><b>' + stats.skip + '</b></div>',
+        '<div class="metric"><span>WAIT</span><b>' + stats.wait + '</b></div>',
+        '<div class="metric"><span>PRINT</span><b>' + stats.print + '</b></div>',
+        '<div class="metric"><span>Printed JSON</span><b>' + stats.printedTotal + '</b></div>',
+      '</div>',
+      '<p class="small">Basis: ' + esc(MIRAKL_LOG_FILE) + ' und ' + esc(PRINTED_MIRAKL_FILE) + '</p>',
+      '<pre>' + esc(stats.lastLines.join('\n') || 'Keine Mirakl-Logs vorhanden.') + '</pre>',
+    '</div>'
+  ].join('');
+}
+
 function renderGitCard() {
   return [
     '<div class="card">',
@@ -541,26 +584,48 @@ function renderGitCard() {
 }
 
 function renderHelpCard() {
+  const commands = [
+    ['PM2 Status', 'pm2.cmd list'],
+    ['Logs Dashboard', 'pm2.cmd logs docmorris-dashboard --lines 100'],
+    ['Logs DHL / DE', 'pm2.cmd logs mirakl-autoprint-de --lines 100'],
+    ['Logs UPS / Ausland', 'pm2.cmd logs mirakl-ups --lines 100'],
+    ['DE Worker starten', 'pm2.cmd start C:\\docmorris-auto\\mirakl-autoprint.js --name mirakl-autoprint-de'],
+    ['UPS Worker starten', 'pm2.cmd start C:\\docmorris-auto\\mirakl-autoprint-ups.js --name mirakl-ups'],
+    ['DE Worker neu starten', 'pm2.cmd restart mirakl-autoprint-de --update-env'],
+    ['UPS Worker neu starten', 'pm2.cmd restart mirakl-ups --update-env'],
+    ['Dashboard neu starten', 'pm2.cmd restart docmorris-dashboard --update-env'],
+    ['PM2 speichern', 'pm2.cmd save'],
+    ['Reconcile prüfen', 'node C:\\docmorris-auto\\reconcile-mirakl-shopify.js'],
+    ['Repair ausführen', 'node C:\\docmorris-auto\\repair-mirakl-shopify.js'],
+    ['UPS Syntax prüfen', 'node --check C:\\docmorris-auto\\mirakl-autoprint-ups.js'],
+    ['DE Syntax prüfen', 'node --check C:\\docmorris-auto\\mirakl-autoprint.js'],
+    ['Dashboard Syntax prüfen', 'node --check C:\\docmorris-auto\\dashboard.js'],
+    ['Mirakl-State öffnen', 'notepad C:\\docmorris-auto\\mirakl-processing.json'],
+    ['Printed-Liste öffnen', 'notepad C:\\docmorris-auto\\printed-mirakl.json'],
+    ['ENV öffnen', 'notepad C:\\docmorris-auto\\.env']
+  ];
+
+  const rows = commands.map(([label, command]) => [
+    '<tr>',
+      '<td><b>' + esc(label) + '</b></td>',
+      '<td><code>' + esc(command) + '</code></td>',
+    '</tr>'
+  ].join('')).join('');
+
   return [
     '<div class="card">',
-      '<h2>Hilfe / Notfallablauf</h2>',
-      '<div class="row"><span class="label">Druckerproblem:</span>C:\\DocMorris-Druckarchiv pruefen</div>',
-      '<div class="row"><span class="label">Label fehlt:</span>labels-Ordner pruefen</div>',
-      '<div class="row"><span class="label">Lieferschein fehlt:</span>lieferscheine-Ordner pruefen</div>',
-      '<div class="row"><span class="label">Bestellung haengt:</span>Skip-Liste pruefen</div>',
+      '<h2>PowerShell Hilfe / Notfallbefehle</h2>',
+      '<p class="small">Diese Befehle kannst du direkt in PowerShell kopieren.</p>',
+      '<table><thead><tr><th>Zweck</th><th>Befehl</th></tr></thead><tbody>',
+        rows,
+      '</tbody></table>',
     '</div>'
   ].join('');
 }
 
 function renderPlaceholderCard(title, subtitle, items) {
   items = items || [];
-  return [
-    '<div class="card">',
-      '<h2>' + esc(title) + '</h2>',
-      '<p class="small">' + esc(subtitle) + '</p>',
-      items.length ? '<ul>' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul>' : '<p class="empty">Noch kein aktives Modul angebunden.</p>',
-    '</div>'
-  ].join('');
+  return ['<div class="card"><h2>' + esc(title) + '</h2><p class="small">' + esc(subtitle) + '</p>', items.length ? '<ul>' + items.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul>' : '<p class="empty">Noch kein aktives Modul angebunden.</p>', '</div>'].join('');
 }
 
 function renderWooCommerceCard() {
@@ -570,27 +635,13 @@ function renderWooCommerceCard() {
       '<p class="small">Live-Daten aus WooCommerce, Tracking ergaenzt ueber Sendcloud.</p>',
       '<div id="woo-loading">Lade WooCommerce-Daten...</div>',
       '<div id="woo-table" style="display:none;">',
-        '<table>',
-          '<thead>',
-            '<tr>',
-              '<th>Bestellung</th>',
-              '<th>Name</th>',
-              '<th>Ort</th>',
-              '<th>Status</th>',
-              '<th>Carrier</th>',
-              '<th>Tracking</th>',
-              '<th>Datum</th>',
-              '<th>Aktion</th>',
-            '</tr>',
-          '</thead>',
-          '<tbody id="woo-body"></tbody>',
-        '</table>',
+        '<table><thead><tr><th>Bestellung</th><th>Name</th><th>Ort</th><th>Status</th><th>Carrier</th><th>Tracking</th><th>Datum</th><th>Aktion</th></tr></thead><tbody id="woo-body"></tbody></table>',
       '</div>',
     '</div>'
   ].join('');
 }
 
-function renderPage(actionResult) {
+function renderPage(actionResult, dynamic = {}) {
   const s = readStatus();
   const errors = readErrors();
   const skips = readSkips();
@@ -600,189 +651,51 @@ function renderPage(actionResult) {
   const slips = readPdfList(SLIP_ARCHIVE_DIR);
   const returns = readPdfList(RETURN_ARCHIVE_DIR);
   const health = getHealthStats();
+  const miraklStats = getMiraklStats();
 
-  const color = s.status === 'OK' ? '#16a34a' : s.status === 'FEHLER' ? '#dc2626' : '#ca8a04';
+  const color = s.status === 'OK' ? '#22c55e' : s.status === 'FEHLER' ? '#ef4444' : '#f59e0b';
 
   return [
-    '<!DOCTYPE html>',
-    '<html lang="de">',
-    '<head>',
-      '<meta charset="UTF-8">',
-      '<meta http-equiv="refresh" content="15">',
-      '<title>Fulfillment Dashboard V2</title>',
-      '<style>',
-        'body{font-family:Arial,sans-serif;background:#f6f7f9;padding:40px;color:#111827;}',
-        '.wrap{max-width:1600px;margin:0 auto;}',
-        '.tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;position:sticky;top:0;z-index:10;background:#f6f7f9;padding:10px 0;}',
-        '.tab{display:none;}',
-        '.tab.active{display:block;}',
-        '.tab-button{background:#111827;}',
-        '.tab-button.active{background:#2563eb;}',
-        '.card{background:white;border-radius:16px;padding:28px;margin-bottom:20px;box-shadow:0 4px 20px rgba(0,0,0,.08);}',
-        '.hero-card{display:flex;justify-content:space-between;align-items:center;gap:20px;}',
-        '.status{font-size:28px;font-weight:bold;white-space:nowrap;}',
-        '.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;}',
-        '.row{margin:14px 0;font-size:17px;}',
-        '.label{color:#555;width:180px;display:inline-block;}',
-        '.small{color:#6b7280;font-size:13px;}',
-        'pre{background:#111827;color:#f9fafb;padding:16px;border-radius:12px;white-space:pre-wrap;max-height:380px;overflow:auto;font-size:12px;}',
-        'table{width:100%;border-collapse:collapse;margin-top:12px;}',
-        'th,td{text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;vertical-align:top;font-size:14px;}',
-        'th{background:#f3f4f6;font-weight:bold;}',
-        '.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#fee2e2;color:#991b1b;font-weight:bold;font-size:12px;}',
-        '.empty{color:#16a34a;font-weight:bold;}',
-        '.buttons{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;}',
-        '.pdf-list{max-height:420px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:12px;padding:10px;background:#fafafa;}',
-        'button{border:none;border-radius:10px;padding:11px 16px;font-size:14px;cursor:pointer;color:white;font-weight:bold;margin-top:7px;}',
-        'a{color:#2563eb;font-weight:bold;text-decoration:none;}',
-        '.green{background:#16a34a;}',
-        '.red{background:#dc2626;}',
-        '.orange{background:#d97706;}',
-        '.blue{background:#2563eb;}',
-        '.dark{background:#111827;}',
-        '.gray{background:#4b5563;}',
-        'form{display:block;margin:0;}',
-        '.danger-note{color:#991b1b;font-size:13px;margin-top:8px;}',
-        '@media(max-width:850px){.grid{grid-template-columns:1fr;}.hero-card{align-items:flex-start;flex-direction:column;}body{padding:20px;}}',
-      '</style>',
-    '</head>',
-    '<body>',
-      '<div class="wrap">',
-        '<div class="tabs">',
-          '<button class="tab-button active" data-tab="overview" onclick="showTab(\'overview\')">Uebersicht</button>',
-          '<button class="tab-button" data-tab="docmorris" onclick="showTab(\'docmorris\')">DocMorris</button>',
-          '<button class="tab-button" data-tab="woocommerce" onclick="showTab(\'woocommerce\')">WooCommerce</button>',
-          '<button class="tab-button" data-tab="cdiscount" onclick="showTab(\'cdiscount\')">Cdiscount</button>',
-          '<button class="tab-button" data-tab="mirakl" onclick="showTab(\'mirakl\')">Mirakl</button>',
-          '<button class="tab-button" data-tab="system" onclick="showTab(\'system\')">System</button>',
-        '</div>',
-
-        renderActionResult(actionResult),
-
-        '<div id="overview" class="tab active">',
-          renderStatusHeader(s, health, color),
-          renderLogsCard(logs),
-        '</div>',
-
-        '<div id="docmorris" class="tab">',
-          '<div class="grid">',
-            renderErrorsCard(errors),
-            renderSkipsCard(skips),
-          '</div>',
-          renderInvoicesCard(invoices),
-          renderPdfArchiveCard('DHL Labels (Archiv)', 'Maximal 50 Labels.', labels, '/labels', 'Keine Labels vorhanden.'),
-          renderPdfArchiveCard('Lieferscheine (Archiv)', 'Maximal 50 Lieferscheine.', slips, '/slips', 'Keine Lieferscheine vorhanden.'),
-          renderPdfArchiveCard('Retourenlabels (Archiv)', 'Maximal 50 Retourenlabels.', returns, '/returns', 'Keine Retourenlabels vorhanden.'),
-        '</div>',
-
-        '<div id="woocommerce" class="tab">',
-          renderWooCommerceCard(),
-        '</div>',
-
-        '<div id="cdiscount" class="tab">',
-          renderPlaceholderCard('Cdiscount', 'Vorbereiteter Bereich fuer Cdiscount Operations.', [
-            'Offer-Status',
-            'Preis-/Bestandsupdates',
-            'Upload- und Fehlerlogs'
-          ]),
-        '</div>',
-
-        '<div id="mirakl" class="tab">',
-          renderPlaceholderCard('Mirakl / ShopApotheke', 'Vorbereiteter Bereich fuer Mirakl- und ShopApotheke-Prozesse.', [
-            'Versandstatus',
-            'Tracking-Rueckmeldung',
-            'Fehlerkontrolle'
-          ]),
-        '</div>',
-
-        '<div id="system" class="tab">',
-          renderControlCard(),
-          renderGitCard(),
-          renderHelpCard(),
-        '</div>',
-
+    '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="20"><title>Fulfillment Dashboard V3</title>',
+    '<style>',
+      ':root{--bg:#0b1120;--panel:#111827;--panel2:#172033;--text:#e5e7eb;--muted:#94a3b8;--line:#263244;--blue:#3b82f6;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--gray:#64748b;}',
+      '*{box-sizing:border-box}body{font-family:Inter,Arial,sans-serif;background:linear-gradient(180deg,#07111f 0%,#111827 100%);padding:28px;color:var(--text);margin:0;} .wrap{max-width:1700px;margin:0 auto;}',
+      '.tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;position:sticky;top:0;z-index:10;background:rgba(11,17,32,.94);backdrop-filter:blur(8px);padding:10px 0;border-bottom:1px solid var(--line)}',
+      '.tab{display:none}.tab.active{display:block}.tab-button{background:#1f2937;color:#e5e7eb;border:1px solid #334155}.tab-button.active{background:var(--blue);border-color:var(--blue)}',
+      '.card{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:18px;padding:24px;margin-bottom:20px;box-shadow:0 12px 34px rgba(0,0,0,.26)}',
+      '.hero-card{display:flex;justify-content:space-between;align-items:center;gap:20px;background:linear-gradient(135deg,#101827 0%,#1d2b46 100%)}h1{margin:0;font-size:32px}h2{margin-top:0}.status{font-size:28px;font-weight:800;white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.mini-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.metric-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}.mini-card,.metric{background:var(--panel2);border:1px solid var(--line);border-radius:16px;padding:16px}.mini-title{font-weight:800;margin-bottom:10px}.mini-status{margin:8px 0}.mini-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.metric span{display:block;color:var(--muted);font-size:12px}.metric b{font-size:26px}',
+      '.row{margin:12px 0;font-size:16px}.label{color:var(--muted);width:185px;display:inline-block}.small{color:var(--muted);font-size:13px}.empty{color:var(--green);font-weight:800}.warn-text{color:var(--orange)}',
+      'pre{background:#020617;color:#d1d5db;padding:16px;border-radius:14px;white-space:pre-wrap;max-height:430px;overflow:auto;font-size:12px;border:1px solid #1f2937}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}th{background:#0f172a;font-weight:800}.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#3f1d1d;color:#fecaca;font-weight:800;font-size:12px}.pill{display:inline-block;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:900;text-transform:uppercase}.pill.ok{background:#064e3b;color:#bbf7d0}.pill.warn{background:#713f12;color:#fde68a}.pill.bad{background:#7f1d1d;color:#fecaca}',
+      '.buttons{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.pdf-list{max-height:420px;overflow-y:auto;border:1px solid var(--line);border-radius:12px;padding:10px;background:#0f172a}button{border:none;border-radius:10px;padding:10px 14px;font-size:13px;cursor:pointer;color:white;font-weight:800;margin-top:7px}a{color:#93c5fd;font-weight:800;text-decoration:none}.green{background:var(--green)}.red{background:var(--red)}.orange{background:var(--orange)}.blue{background:var(--blue)}.dark{background:#020617}.gray{background:var(--gray)}form{display:block;margin:0}.danger-note{color:#fecaca;font-size:13px;margin-top:8px}.bar{height:10px;background:#020617;border-radius:999px;overflow:hidden;border:1px solid #334155}.bar-fill{height:100%;border-radius:999px}.okbar{background:var(--green)}.warnbar{background:var(--orange)}.badbar{background:var(--red)}',
+      '@media(max-width:1100px){.mini-grid,.metric-grid{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr}}@media(max-width:700px){body{padding:16px}.mini-grid,.metric-grid{grid-template-columns:1fr}.hero-card{align-items:flex-start;flex-direction:column}}',
+    '</style></head><body><div class="wrap">',
+      '<div class="tabs">',
+        '<button class="tab-button active" data-tab="overview" onclick="showTab(\'overview\')">Uebersicht</button>',
+        '<button class="tab-button" data-tab="docmorris" onclick="showTab(\'docmorris\')">DocMorris</button>',
+        '<button class="tab-button" data-tab="mirakl" onclick="showTab(\'mirakl\')">Mirakl</button>',
+        '<button class="tab-button" data-tab="woocommerce" onclick="showTab(\'woocommerce\')">WooCommerce</button>',
+        '<button class="tab-button" data-tab="cdiscount" onclick="showTab(\'cdiscount\')">Cdiscount</button>',
+        '<button class="tab-button" data-tab="system" onclick="showTab(\'system\')">System</button>',
       '</div>',
-
-      '<script>',
-        'function showTab(id){',
-          'var tab=document.getElementById(id);',
-          'var button=document.querySelector("[data-tab=\\"" + id + "\\"]");',
-          'if(!tab||!button){return;}',
-          'document.querySelectorAll(".tab").forEach(function(el){el.classList.remove("active");});',
-          'document.querySelectorAll(".tab-button").forEach(function(el){el.classList.remove("active");});',
-          'tab.classList.add("active");',
-          'button.classList.add("active");',
-          'localStorage.setItem("activeDashboardTab",id);',
-          'if(id==="woocommerce"){loadWooCommerce();}',
-        '}',
-        'document.addEventListener("DOMContentLoaded",function(){',
-          'showTab(localStorage.getItem("activeDashboardTab")||"overview");',
-        '});',
-        'function html(value){',
-          'return String(value==null?"":value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\\\'/g,"&#039;");',
-        '}',
-        'async function loadWooCommerce(){',
-          'try{',
-            'var res=await fetch("/api/woocommerce/orders");',
-            'var data=await res.json();',
-            'var loading=document.getElementById("woo-loading");',
-            'var table=document.getElementById("woo-table");',
-            'var body=document.getElementById("woo-body");',
-            'if(!data.ok){loading.innerText="Fehler beim Laden: "+JSON.stringify(data.error||"Unbekannt");return;}',
-            'loading.style.display="none";',
-            'table.style.display="block";',
-            'if(!data.orders||data.orders.length===0){body.innerHTML="<tr><td colspan=\\"8\\">Keine WooCommerce-Bestellungen gefunden.</td></tr>";return;}',
-            'body.innerHTML=data.orders.map(function(p){',
-              'var bg="";',
-              'if(!p.trackingNumber||p.trackingNumber==="-"){bg="#fee2e2";}',
-              'else if(p.status==="processing"||p.status==="pending"){bg="#fef3c7";}',
-              'else{bg="#dcfce7";}',
-              'var trackingCell=p.trackingUrl?("<a href=\\""+html(p.trackingUrl)+"\\" target=\\"_blank\\">Tracking</a>"):"-";',
-              'return "<tr style=\\"background:"+bg+"\\">"+',
-                '"<td>"+html(p.orderNumber)+"</td>"+',
-                '"<td>"+html(p.name)+"</td>"+',
-                '"<td>"+html(p.city)+" ("+html(p.country)+")</td>"+',
-                '"<td>"+html(p.status)+"</td>"+',
-                '"<td>"+html(p.carrier)+"</td>"+',
-                '"<td>"+trackingCell+"</td>"+',
-                '"<td>"+html(new Date(p.createdAt).toLocaleString("de-DE"))+"</td>"+',
-                '"<td>"+',
-                  '"<form method=\\"POST\\" action=\\"/control/reprint-invoice\\">"+',
-                    '"<input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\">"+',
-                    '"<button class=\\"blue\\" type=\\"submit\\">Rechnung</button>"+',
-                  '"</form>"+',
-                  '"<form method=\\"POST\\" action=\\"/control/reprint-packing-slip\\">"+',
-                    '"<input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\">"+',
-                    '"<button class=\\"orange\\" type=\\"submit\\">Lieferschein</button>"+',
-                  '"</form>"+',
-                  '"<form method=\\"POST\\" action=\\"/control/create-return-label\\">"+',
-                    '"<input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\">"+',
-                    '"<button class=\\"red\\" type=\\"submit\\">Retoure</button>"+',
-                  '"</form>"+',
-                  '"<form method=\\"POST\\" action=\\"/control/fulfill-woo\\">"+',
-                    '"<input type=\\"hidden\\" name=\\"orderId\\" value=\\""+html(p.id)+"\\">"+',
-                    '"<input type=\\"hidden\\" name=\\"tracking\\" value=\\""+html(p.trackingNumber)+"\\">"+',
-                    '"<input type=\\"hidden\\" name=\\"url\\" value=\\""+html(p.trackingUrl)+"\\">"+',
-                    '"<button class=\\"green\\" type=\\"submit\\">Fulfill</button>"+',
-                  '"</form>"+',
-                '"</td>"+',
-              '"</tr>";',
-            '}).join("");',
-          '}catch(err){',
-            'var loading=document.getElementById("woo-loading");',
-            'if(loading){loading.innerText="Fehler beim Laden: "+err.message;}',
-          '}',
-        '}',
-      '</script>',
-    '</body>',
-    '</html>'
+      renderActionResult(actionResult),
+      '<div id="overview" class="tab active">', renderStatusHeader(s, health, color), renderProcessCards(dynamic.processes || []), renderDiskCards(dynamic.disks || []), renderLogsCard(logs), '</div>',
+      '<div id="docmorris" class="tab"><div class="grid">', renderErrorsCard(errors), renderSkipsCard(skips), '</div>', renderInvoicesCard(invoices), renderPdfArchiveCard('DHL Labels (Archiv)', 'Maximal 50 Labels.', labels, '/labels', 'Keine Labels vorhanden.'), renderPdfArchiveCard('Lieferscheine (Archiv)', 'Maximal 50 Lieferscheine.', slips, '/slips', 'Keine Lieferscheine vorhanden.'), renderPdfArchiveCard('Retourenlabels (Archiv)', 'Maximal 50 Retourenlabels.', returns, '/returns', 'Keine Retourenlabels vorhanden.'), '</div>',
+      '<div id="mirakl" class="tab">', renderMiraklCard(miraklStats), '</div>',
+      '<div id="woocommerce" class="tab">', renderWooCommerceCard(), '</div>',
+      '<div id="cdiscount" class="tab">', renderPlaceholderCard('Cdiscount', 'Vorbereiteter Bereich fuer Cdiscount Operations.', ['Offer-Status', 'Preis-/Bestandsupdates', 'Upload- und Fehlerlogs']), '</div>',
+      '<div id="system" class="tab">', renderControlCard(), renderGitCard(), renderHelpCard(), '</div>',
+    '</div>',
+    '<script>',
+      'function showTab(id){var tab=document.getElementById(id);var button=document.querySelector("[data-tab=\\\""+id+"\\\"]");if(!tab||!button)return;document.querySelectorAll(".tab").forEach(function(el){el.classList.remove("active")});document.querySelectorAll(".tab-button").forEach(function(el){el.classList.remove("active")});tab.classList.add("active");button.classList.add("active");localStorage.setItem("activeDashboardTab",id);if(id==="woocommerce")loadWooCommerce();}',
+      'document.addEventListener("DOMContentLoaded",function(){showTab(localStorage.getItem("activeDashboardTab")||"overview")});',
+      'function html(value){return String(value==null?"":value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\\\'/g,"&#039;")}',
+      'async function loadWooCommerce(){try{var res=await fetch("/api/woocommerce/orders");var data=await res.json();var loading=document.getElementById("woo-loading");var table=document.getElementById("woo-table");var body=document.getElementById("woo-body");if(!data.ok){loading.innerText="Fehler beim Laden: "+JSON.stringify(data.error||"Unbekannt");return}loading.style.display="none";table.style.display="block";if(!data.orders||data.orders.length===0){body.innerHTML="<tr><td colspan=\\"8\\">Keine WooCommerce-Bestellungen gefunden.</td></tr>";return}body.innerHTML=data.orders.map(function(p){var bg="";if(!p.trackingNumber||p.trackingNumber==="-")bg="#3f1d1d";else if(p.status==="processing"||p.status==="pending")bg="#4a330d";else bg="#123524";var trackingCell=p.trackingUrl?("<a href=\\""+html(p.trackingUrl)+"\\" target=\\"_blank\\">Tracking</a>"):"-";return "<tr style=\\"background:"+bg+"\\"><td>"+html(p.orderNumber)+"</td><td>"+html(p.name)+"</td><td>"+html(p.city)+" ("+html(p.country)+")</td><td>"+html(p.status)+"</td><td>"+html(p.carrier)+"</td><td>"+trackingCell+"</td><td>"+html(new Date(p.createdAt).toLocaleString("de-DE"))+"</td><td><form method=\\"POST\\" action=\\"/control/reprint-invoice\\"><input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\"><button class=\\"blue\\" type=\\"submit\\">Rechnung</button></form><form method=\\"POST\\" action=\\"/control/reprint-packing-slip\\"><input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\"><button class=\\"orange\\" type=\\"submit\\">Lieferschein</button></form><form method=\\"POST\\" action=\\"/control/create-return-label\\"><input type=\\"hidden\\" name=\\"order\\" value=\\""+html(p.orderNumber)+"\\"><button class=\\"red\\" type=\\"submit\\">Retoure</button></form><form method=\\"POST\\" action=\\"/control/fulfill-woo\\"><input type=\\"hidden\\" name=\\"orderId\\" value=\\""+html(p.id)+"\\"><input type=\\"hidden\\" name=\\"tracking\\" value=\\""+html(p.trackingNumber)+"\\"><input type=\\"hidden\\" name=\\"url\\" value=\\""+html(p.trackingUrl)+"\\"><button class=\\"green\\" type=\\"submit\\">Fulfill</button></form></td></tr>"}).join("")}catch(err){var loading=document.getElementById("woo-loading");if(loading)loading.innerText="Fehler beim Laden: "+err.message}}',
+    '</script></body></html>'
   ].join('');
 }
 
-app.get('/', (req, res) => {
-  res.send(renderPage(null));
-});
+app.get('/', async (req, res) => res.send(await renderPageAsync(null)));
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('Dashboard V2 laeuft auf http://0.0.0.0:' + PORT);
+  console.log('Dashboard V3 laeuft auf http://0.0.0.0:' + PORT);
 });

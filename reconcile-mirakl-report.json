@@ -1,0 +1,18 @@
+{
+  "createdAt": "2026-05-09T16:27:31.188Z",
+  "totals": {
+    "shopifyUnfulfilled": 0,
+    "printedIds": 94,
+    "stateEntries": 70,
+    "needsRepair": 0,
+    "foreignOpen": 0,
+    "notPrinted": 0,
+    "notMiraklShipped": 0,
+    "unknown": 0
+  },
+  "needsRepair": [],
+  "foreignOpen": [],
+  "notPrinted": [],
+  "notMiraklShipped": [],
+  "unknown": []
+}

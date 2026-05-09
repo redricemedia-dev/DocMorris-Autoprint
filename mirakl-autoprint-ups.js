@@ -13,7 +13,11 @@ const PRINTED_FILE = 'C:\\docmorris-auto\\printed-mirakl.json';
 const MIRAKL_STATE_FILE = 'C:\\docmorris-auto\\mirakl-processing.json';
 const MIRAKL_LOG_FILE = process.env.MIRAKL_LOG_FILE || 'G:\\DocMorris-Logs\\mirakl-autoprint.log';
 
-const SHIPPING_METHOD = Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID || 89);
+const SHIPPING_METHOD = Number(
+  process.env.SENDCLOUD_SHIPPING_METHOD_ID_UPS || 28996
+);
+
+
 function getShippingMethodForCountry(countryCode) {
   const cc = String(countryCode || 'DE').toUpperCase();
 
@@ -46,11 +50,21 @@ function getMiraklCarrierCodeForCountry(countryCode) {
 const DEFAULT_WEIGHT = process.env.SENDCLOUD_DEFAULT_WEIGHT || '0.5';
 
 function cleanPhone(value) {
-  const phone = String(value || '').trim();
+  let phone = String(value || '').trim();
 
-  if (phone) return phone;
+  phone = phone
+    .replace(/[^\d+]/g, '')
+    .replace(/^00/, '+');
 
-  return process.env.DEFAULT_INTERNATIONAL_PHONE || '+491234567890';
+  if (!phone || phone.length < 8) {
+    phone = process.env.DEFAULT_INTERNATIONAL_PHONE || '+49890000000';
+  }
+
+  if (phone.length > 20) {
+    phone = process.env.DEFAULT_INTERNATIONAL_PHONE || '+49890000000';
+  }
+
+  return phone;
 }
 
 function maxLen(value, length) {
@@ -99,45 +113,6 @@ function readJson(file, fallback) {
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
-}
-
-function readCarrierConfig() {
-  return readJson('C:\\docmorris-auto\\carrier-config.json', {
-    DE: 'DHL',
-    AT: 'DHL',
-    IT: 'DHL',
-    BE: 'UPS'
-  });
-}
-
-function getCarrierForOrder(order) {
-  const cc = String(order.shipping_address?.country_code || 'DE').toUpperCase();
-  const config = readCarrierConfig();
-  return String(config[cc] || 'DHL').toUpperCase();
-}
-
-function getShippingMethodForOrder(order) {
-  const cc = String(order.shipping_address?.country_code || 'DE').toUpperCase();
-  const carrier = getCarrierForOrder(order);
-
-  const methods = {
-    DHL: {
-      DE: Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID_DHL_DE || 89),
-      AT: Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID_DHL_AT),
-      IT: Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID_DHL_IT)
-    },
-    UPS: {
-      BE: Number(process.env.SENDCLOUD_SHIPPING_METHOD_ID_UPS_BE || 28996)
-    }
-  };
-
-  const method = methods[carrier]?.[cc];
-
-  if (!method || Number.isNaN(method)) {
-    throw new Error(`Keine Versandmethode fuer ${carrier} ${cc}`);
-  }
-
-  return method;
 }
 
 function wasPrinted(orderId) {
@@ -340,7 +315,7 @@ async function fulfillShopifyOrder(order, parcel, miraklOrderId) {
           message: `Mirakl AutoPrint ${miraklOrderId}`,
           notify_customer: false,
           tracking_info: {
-            company: getCarrierForOrder(order),
+            company: getCarrierForCountry(order.shipping_address?.country_code),
             number: trackingNumber,
             url: trackingUrl
           },
@@ -422,7 +397,7 @@ async function createParcel(order) {
         name: a.name || `${a.first_name || ''} ${a.last_name || ''}`.trim(),
         company_name: a.company || '',
         address: a.address1 || '',
-        address_2: maxLen(a.address2 || '', 35),
+        address_2: String(a.address2 || '').slice(0, 35),
         house_number: '',
         city: a.city || '',
         postal_code: a.zip || '',
@@ -434,7 +409,7 @@ async function createParcel(order) {
         external_order_id: order.admin_graphql_api_id,
         external_reference: String(order.id),
        shipment: {
-  id: getShippingMethodForOrder(order)
+  id: getShippingMethodForCountry(countryCode)
 },
         request_label: true
       }
@@ -601,7 +576,7 @@ async function sendPdfToPrintNode({ printerId, title, base64 }) {
 async function printLabel(base64, orderName) {
   return await sendPdfToPrintNode({
     printerId: PRINTER_ID,
-    title: `Mirakl DHL Label ${orderName}`,
+    title: `Mirakl UPS Label ${orderName}`,
     base64
   });
 }
@@ -712,7 +687,7 @@ async function renderPackingSlipHtml(order) {
     ORDER_NAME: escapeHtml(order.name || ''),
     ORDER_DATE: escapeHtml(orderDate),
     CUSTOMER_EMAIL: escapeHtml(order.email || '-'),
-    SHIPPING_PROVIDER: 'DHL',
+    SHIPPING_PROVIDER: 'UPS',
     SHIPPING_ADDRESS: formatAddress(order.shipping_address || {}),
     ITEM_ROWS: renderItemRows(order),
     COMPANY_FOOTER: escapeHtml(COMPANY_FOOTER)
@@ -827,6 +802,8 @@ async function maybePrintLabel(order, miraklOrderId, parcel) {
   };
 }
 
+
+
 async function processOrder(order, parcels) {
   console.log('Name:', order.name);
   console.log('Email:', order.email);
@@ -843,6 +820,14 @@ async function processOrder(order, parcels) {
     return;
   }
 
+  const countryCode = String(order.shipping_address?.country_code || 'DE').toUpperCase();
+  const UPS_COUNTRIES = ['AT', 'BE', 'IT'];
+
+  if (!UPS_COUNTRIES.includes(countryCode)) {
+    logMirakl(`SKIP ${order.name} / ${miraklOrderId}: kein UPS Land (${countryCode})`);
+    return;
+  }
+
   if (isDone(miraklOrderId)) {
     logMirakl(`SKIP ${order.name} / ${miraklOrderId}: bereits DONE laut mirakl-processing.json`);
     return;
@@ -853,150 +838,97 @@ async function processOrder(order, parcels) {
     return;
   }
 
-  const countryCode = String(order.shipping_address?.country_code || 'DE').toUpperCase();
-
-  if (countryCode !== 'DE') {
-  logMirakl(`SKIP ${order.name} / ${miraklOrderId}: Ausland ${countryCode} deaktiviert`);
-  setState(miraklOrderId, {
-    status: 'foreign_disabled',
-    orderName: order.name,
-    countryCode
-  });
-  return;
-}
-
   lockOrder(miraklOrderId, order.name);
 
   let parcel = findParcelForOrder(miraklOrderId, parcels);
 
   if (!parcel) {
-    logMirakl(`CREATE ${order.name} / ${miraklOrderId}: Sendcloud Parcel wird erstellt`);
+    logMirakl(`CREATE ${order.name} / ${miraklOrderId}: UPS Sendcloud Parcel wird erstellt`);
     parcel = await createParcel(order);
-    logMirakl(`CREATE ${order.name} / ${miraklOrderId}: Sendcloud Parcel erstellt`);
+    logMirakl(`CREATE ${order.name} / ${miraklOrderId}: UPS Sendcloud Parcel erstellt`);
   }
 
   if (!parcel.tracking_number) {
-    logMirakl(`LABEL ${order.name} / ${miraklOrderId}: Parcel da, fordere Label an`);
+    logMirakl(`LABEL ${order.name} / ${miraklOrderId}: UPS Parcel da, fordere Label an`);
     parcel = await requestSendcloudLabel(parcel);
 
     if (!parcel.tracking_number) {
-      logMirakl(`WAIT ${order.name} / ${miraklOrderId}: Label angefordert, aber noch kein Tracking`);
+      logMirakl(`WAIT ${order.name} / ${miraklOrderId}: UPS Label angefordert, aber noch kein Tracking`);
       setState(miraklOrderId, {
-        status: 'waiting_tracking',
+        status: 'waiting_ups_tracking',
         orderName: order.name,
+        countryCode,
         parcelId: parcel.id || null
       });
       return;
     }
 
-    logMirakl(`LABEL ${order.name} / ${miraklOrderId}: Tracking erhalten ${parcel.tracking_number}`);
+    logMirakl(`LABEL ${order.name} / ${miraklOrderId}: UPS Tracking erhalten ${parcel.tracking_number}`);
   }
 
   setState(miraklOrderId, {
-    status: 'tracking_ready',
+    status: 'ups_tracking_ready',
     orderName: order.name,
+    countryCode,
     tracking: parcel.tracking_number,
     trackingUrl: parcel.tracking_url || '',
-    parcelId: parcel.id || null
+    parcelId: parcel.id || null,
+    carrier: 'UPS'
   });
 
   logMirakl(`READY ${order.name} / ${miraklOrderId}: ${parcel.tracking_number}`);
 
-  const miraklOrder = await findMiraklOrderByReference(miraklOrderId);
-
-  if (!miraklOrder) {
-    logMirakl(`WAIT ${miraklOrderId}: nicht in Mirakl gefunden`);
-    setState(miraklOrderId, {
-      status: 'waiting_mirakl',
-      orderName: order.name,
-      tracking: parcel.tracking_number
-    });
-    return;
-  }
-
-  const realMiraklId = miraklOrder.order_id || miraklOrder.id || miraklOrder.uuid;
-  const status = String(miraklOrder.status || miraklOrder.order_state || '').toUpperCase();
-
-  console.log(`→ Mirakl API ID: ${realMiraklId}`);
-  console.log(`→ Mirakl Status: ${status || 'unbekannt'}`);
-
-  let miraklShipped = false;
-
-  if (status === 'SHIPPED') {
-    logMirakl(`DONE ${miraklOrderId}: bereits SHIPPED`);
-    miraklShipped = true;
-  } else if (status && status !== 'SHIPPING') {
-    logMirakl(`WAIT ${miraklOrderId}: falscher Status (${status})`);
-    setState(miraklOrderId, {
-      status: 'waiting_status',
-      orderName: order.name,
-      miraklStatus: status,
-      tracking: parcel.tracking_number
-    });
-    return;
-  } else if (!DRY_RUN) {
-    await updateMiraklTracking(realMiraklId, parcel);
-    const shipResult = await shipMiraklOrder(realMiraklId);
-
-    if (shipResult.notReady) {
-      logMirakl(`WAIT ${miraklOrderId}: ${shipResult.reason}`);
-      setState(miraklOrderId, {
-        status: 'waiting_mirakl_not_ready',
-        orderName: order.name,
-        reason: shipResult.reason,
-        tracking: parcel.tracking_number
-      });
-      return;
-    }
-
-    miraklShipped = true;
-
-    if (shipResult.alreadyShipped) {
-      logMirakl(`DONE ${miraklOrderId}: bereits SHIPPED`);
-    } else {
-      logMirakl(`DONE ${miraklOrderId}`);
-    }
-  } else {
-    logMirakl(`DRY_RUN ${miraklOrderId}: Mirakl wuerde jetzt shipped gesetzt`);
-  }
-
   let shopifyResult = { ok: false };
   let printResult = { printed: false };
 
-  if (!DRY_RUN && miraklShipped) {
-    try {
-  shopifyResult = await fulfillShopifyOrder(order, parcel, miraklOrderId);
-} catch (err) {
-  const msg = JSON.stringify(err.response?.data || err.message || err);
+  try {
+    shopifyResult = await fulfillShopifyOrder(order, parcel, miraklOrderId);
+  } catch (err) {
+    const msg = JSON.stringify(err.response?.data || err.message || err);
 
-  if (msg.includes('required permission')) {
-    logMirakl(`SHOPIFY ${order.name} / ${miraklOrderId}: keine Fulfillment-Berechtigung, Shopify wird uebersprungen`);
-    shopifyResult = { ok: true, skippedPermission: true };
-  } else {
-    throw err;
-  }
-}
-
-printResult = await maybePrintLabel(order, miraklOrderId, parcel);
+    if (msg.includes('required permission')) {
+      logMirakl(`SHOPIFY ${order.name} / ${miraklOrderId}: keine Fulfillment-Berechtigung, Shopify wird uebersprungen`);
+      shopifyResult = { ok: false, skippedPermission: true };
+    } else {
+      throw err;
+    }
   }
 
-  if (miraklShipped && shopifyResult.ok) {
-    markDone(miraklOrderId, {
+  if (!shopifyResult.ok) {
+    setState(miraklOrderId, {
+      status: 'waiting_shopify_fulfillment',
       orderName: order.name,
+      countryCode,
       tracking: parcel.tracking_number,
       trackingUrl: parcel.tracking_url || '',
       parcelId: parcel.id || null,
-      miraklShipped: true,
-      shopifyFulfilled: true,
-      printed: Boolean(printResult.printed || wasPrinted(miraklOrderId)),
-      labelPrintJob: printResult.labelPrintJob || null,
-      slipPrintJob: printResult.slipPrintJob || null
+      carrier: 'UPS'
     });
+    return;
   }
+
+  printResult = await maybePrintLabel(order, miraklOrderId, parcel);
+
+  markDone(miraklOrderId, {
+    orderName: order.name,
+    countryCode,
+    tracking: parcel.tracking_number,
+    trackingUrl: parcel.tracking_url || '',
+    parcelId: parcel.id || null,
+    carrier: 'UPS',
+    miraklShipped: true,
+    shopifyFulfilled: true,
+    redcareViaSynchron: true,
+    printed: Boolean(printResult.printed || wasPrinted(miraklOrderId)),
+    labelPrintJob: printResult.labelPrintJob || null,
+    slipPrintJob: printResult.slipPrintJob || null
+  });
+
+  logMirakl(`DONE ${order.name} / ${miraklOrderId}: UPS + Shopify fulfilled + Synchron.io`);
 }
 
 async function main() {
-  console.log('=== Mirakl AutoPrint LIVE ===');
+  console.log('=== Mirakl UPS AutoPrint LIVE ===');
 
   const orders = await getShopifyOrders(250);
   const parcels = await getSendcloudParcels(1000);
@@ -1024,10 +956,10 @@ async function loop() {
 
   while (true) {
     try {
-      console.log('\n=== MIRAKL AUTOPRINT SCAN ===', new Date().toISOString());
+      console.log('\n=== MIRAKL UPS AUTOPRINT SCAN ===', new Date().toISOString());
       await main();
     } catch (err) {
-      console.error('MIRAKL AUTOPRINT LOOP ERROR');
+      console.error('MIRAKL UPS AUTOPRINT LOOP ERROR');
       console.error(err.response?.data || err.message);
     }
 
