@@ -29,6 +29,9 @@ const DASHBOARD_PROCESS = process.env.DASHBOARD_PROCESS || 'docmorris-dashboard'
 
 const MIRAKL_LOG_FILE = process.env.MIRAKL_LOG_FILE || 'G:\\DocMorris-Logs\\mirakl-autoprint.log';
 const PRINTED_MIRAKL_FILE = process.env.PRINTED_MIRAKL_FILE || 'C:\\docmorris-auto\\printed-mirakl.json';
+const CARRIER_CONFIG_FILE =
+  process.env.CARRIER_CONFIG_FILE ||
+  'C:\\docmorris-auto\\carrier-config.json';
 
 const APP_VERSION = process.env.APP_VERSION || '1.1.0';
 const APP_BUILD = process.env.APP_BUILD || 'v3';
@@ -58,6 +61,20 @@ function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
+
+function readCarrierConfig() {
+  return readJson(CARRIER_CONFIG_FILE, {
+    DE: 'DHL',
+    AT: 'DHL',
+    IT: 'DHL',
+    BE: 'UPS'
+  });
+}
+
+function writeCarrierConfig(config) {
+  writeJson(CARRIER_CONFIG_FILE, config);
+}
+
 
 function safeReadText(file) {
   try {
@@ -333,17 +350,62 @@ app.post('/control/fulfill-woo', async (req, res) => {
   const trackingUrl = String(req.body.url || '').trim();
 
   if (!orderId || !tracking || tracking === '-') {
-    return res.send(await renderPageAsync({ command: 'fulfill woo', ok: false, stdout: '', stderr: '', error: 'Keine gueltige Trackingnummer vorhanden.' }));
+    return res.send(await renderPageAsync({
+      command: 'fulfill woo',
+      ok: false,
+      stdout: '',
+      stderr: '',
+      error: 'Keine gueltige Trackingnummer vorhanden.'
+    }));
   }
 
   try {
     await fulfillWooOrder(orderId, tracking, trackingUrl);
-    res.send(await renderPageAsync({ command: 'fulfill woo ' + orderId, ok: true, stdout: 'WooCommerce-Bestellung wurde auf completed gesetzt.', stderr: '', error: '' }));
+    res.send(await renderPageAsync({
+      command: 'fulfill woo ' + orderId,
+      ok: true,
+      stdout: 'WooCommerce-Bestellung wurde auf completed gesetzt.',
+      stderr: '',
+      error: ''
+    }));
   } catch (err) {
-    res.send(await renderPageAsync({ command: 'fulfill woo', ok: false, stdout: '', stderr: '', error: JSON.stringify((err.response && err.response.data) || err.message, null, 2) }));
+    res.send(await renderPageAsync({
+      command: 'fulfill woo',
+      ok: false,
+      stdout: '',
+      stderr: '',
+      error: JSON.stringify((err.response && err.response.data) || err.message, null, 2)
+    }));
   }
 });
 
+app.post('/control/set-carrier', async (req, res) => {
+  const country = String(req.body.country || '').toUpperCase();
+  const carrier = String(req.body.carrier || '').toUpperCase();
+
+  const allowedCountries = ['DE', 'AT', 'IT', 'BE'];
+  const allowedCarriers = ['DHL', 'UPS'];
+
+  if (!allowedCountries.includes(country) || !allowedCarriers.includes(carrier)) {
+    return res.send(await renderPageAsync({
+      command: 'set carrier',
+      ok: false,
+      error: 'Ungueltiges Land oder ungueltiger Carrier.'
+    }));
+  }
+
+  const config = readCarrierConfig();
+  config[country] = carrier;
+  writeCarrierConfig(config);
+
+  res.send(await renderPageAsync({
+    command: 'carrier switch',
+    ok: true,
+    stdout: country + ' → ' + carrier + ' gesetzt',
+    stderr: '',
+    error: ''
+  }));
+});
 [
   '/control/start', '/control/stop', '/control/restart', '/control/restart-dashboard', '/control/restart-all',
   '/control/pm2-list', '/control/git-status', '/control/git-log', '/control/git-backup', '/control/retry-order',
@@ -583,6 +645,55 @@ function renderGitCard() {
   ].join('');
 }
 
+
+function renderCarrierCard() {
+  const config = readCarrierConfig();
+
+  const countries = ['DE', 'AT', 'IT', 'BE'];
+
+  const rows = countries.map(country => {
+    const current = String(config[country] || 'DHL').toUpperCase();
+
+    return [
+      '<tr>',
+        '<td><b>' + esc(country) + '</b></td>',
+        '<td>' + esc(current) + '</td>',
+        '<td>',
+          '<form method="POST" action="/control/set-carrier" style="display:inline-block;margin-right:8px;">',
+            '<input type="hidden" name="country" value="' + esc(country) + '">',
+            '<input type="hidden" name="carrier" value="DHL">',
+            '<button class="blue" type="submit">DHL</button>',
+          '</form>',
+          '<form method="POST" action="/control/set-carrier" style="display:inline-block;">',
+            '<input type="hidden" name="country" value="' + esc(country) + '">',
+            '<input type="hidden" name="carrier" value="UPS">',
+            '<button class="orange" type="submit">UPS</button>',
+          '</form>',
+        '</td>',
+      '</tr>'
+    ].join('');
+  }).join('');
+
+  return [
+    '<div class="card">',
+      '<h2>Carrier Routing</h2>',
+      '<p class="small">Live-Steuerung fuer Sendcloud Carrier Routing.</p>',
+      '<table>',
+        '<thead>',
+          '<tr>',
+            '<th>Land</th>',
+            '<th>Aktiver Carrier</th>',
+            '<th>Umschalten</th>',
+          '</tr>',
+        '</thead>',
+        '<tbody>',
+          rows,
+        '</tbody>',
+      '</table>',
+    '</div>'
+  ].join('');
+}
+
 function renderHelpCard() {
   const commands = [
     ['PM2 Status', 'pm2.cmd list'],
@@ -683,8 +794,12 @@ function renderPage(actionResult, dynamic = {}) {
       '<div id="mirakl" class="tab">', renderMiraklCard(miraklStats), '</div>',
       '<div id="woocommerce" class="tab">', renderWooCommerceCard(), '</div>',
       '<div id="cdiscount" class="tab">', renderPlaceholderCard('Cdiscount', 'Vorbereiteter Bereich fuer Cdiscount Operations.', ['Offer-Status', 'Preis-/Bestandsupdates', 'Upload- und Fehlerlogs']), '</div>',
-      '<div id="system" class="tab">', renderControlCard(), renderGitCard(), renderHelpCard(), '</div>',
-    '</div>',
+      '<div id="system" class="tab">',
+  renderControlCard(),
+  renderCarrierCard(),
+  renderGitCard(),
+  renderHelpCard(),
+'</div>',
     '<script>',
       'function showTab(id){var tab=document.getElementById(id);var button=document.querySelector("[data-tab=\\\""+id+"\\\"]");if(!tab||!button)return;document.querySelectorAll(".tab").forEach(function(el){el.classList.remove("active")});document.querySelectorAll(".tab-button").forEach(function(el){el.classList.remove("active")});tab.classList.add("active");button.classList.add("active");localStorage.setItem("activeDashboardTab",id);if(id==="woocommerce")loadWooCommerce();}',
       'document.addEventListener("DOMContentLoaded",function(){showTab(localStorage.getItem("activeDashboardTab")||"overview")});',
